@@ -134,8 +134,7 @@ func createEncryptor(cfg *config.EncryptionConfig, keyProvider types.KeyProvider
 		return stream.NewSimpleAESGCMEncryptor(keyProvider), nil
 
 	case types.AlgorithmChaCha20Poly1305:
-		// TODO: Implement ChaCha20-Poly1305 encryptor
-		return nil, fmt.Errorf("ChaCha20-Poly1305 not yet implemented")
+		return stream.NewSimpleChaCha20Poly1305Encryptor(keyProvider), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported encryption algorithm: %s", cfg.Algorithm)
