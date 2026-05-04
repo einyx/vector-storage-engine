@@ -245,15 +245,21 @@ func (h *Handler) getRangeObject(w http.ResponseWriter, r *http.Request, bucket,
 	logger.Info("Processing range request")
 
 	// Get object metadata first to validate range
-	_, err := h.storage.HeadObject(ctx, bucket, key)
+	info, err := h.storage.HeadObject(ctx, bucket, key)
 	if err != nil {
 		logger.WithError(err).Error("Failed to get object info for range request")
 		h.sendError(w, err, http.StatusNotFound)
 		return
 	}
 
-	// For now, simple implementation - return full object with proper headers
-	// TODO: Implement actual range parsing and partial content serving
+	parsed, parseErr := parseRangeHeader(rangeHeader, info.Size)
+	if parseErr == errRangeUnsatisfiable {
+		logger.Warn("Range not satisfiable")
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", info.Size))
+		h.sendError(w, fmt.Errorf("requested range not satisfiable"), http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
 	fullObj, err := h.storage.GetObject(ctx, bucket, key)
 	if err != nil {
 		logger.WithError(err).Error("Failed to get object for range request")
@@ -264,7 +270,6 @@ func (h *Handler) getRangeObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	headers := w.Header()
 	headers.Set("Content-Type", fullObj.ContentType)
-	headers.Set("Content-Length", strconv.FormatInt(fullObj.Size, 10))
 	headers.Set("ETag", fullObj.ETag)
 	headers.Set("Last-Modified", fullObj.LastModified.Format(http.TimeFormat))
 	headers.Set("Accept-Ranges", "bytes")
@@ -274,20 +279,125 @@ func (h *Handler) getRangeObject(w http.ResponseWriter, r *http.Request, bucket,
 		headers.Set("Cache-Control", cacheControl)
 	}
 
-	// For now, return 200 OK with full content instead of 206 Partial Content
-	// This maintains compatibility while we implement proper range support
-	w.WriteHeader(http.StatusOK)
+	// If the Range header was syntactically invalid, RFC 7233 allows ignoring
+	// it and returning the full representation. Match that behavior so clients
+	// sending malformed headers still receive a usable response.
+	if parseErr != nil {
+		headers.Set("Content-Length", strconv.FormatInt(fullObj.Size, 10))
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(w, fullObj.Body); err != nil {
+			if !isClientDisconnectError(err) {
+				logger.WithError(err).Error("Failed to copy object data after malformed range")
+			} else {
+				logger.WithError(err).Debug("Client disconnected during transfer")
+			}
+		}
+		logger.WithField("size", fullObj.Size).Info("Malformed range; full object served")
+		return
+	}
 
-	// Copy object data to response
-	if _, err := io.Copy(w, fullObj.Body); err != nil {
+	// Skip to the start of the requested range, then stream exactly length bytes.
+	if parsed.start > 0 {
+		if _, err := io.CopyN(io.Discard, fullObj.Body, parsed.start); err != nil {
+			logger.WithError(err).Error("Failed to seek to range start")
+			h.sendError(w, err, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	headers.Set("Content-Length", strconv.FormatInt(parsed.length, 10))
+	headers.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", parsed.start, parsed.start+parsed.length-1, info.Size))
+	w.WriteHeader(http.StatusPartialContent)
+
+	if _, err := io.CopyN(w, fullObj.Body, parsed.length); err != nil {
 		if !isClientDisconnectError(err) {
 			logger.WithError(err).Error("Failed to copy range object data")
 		} else {
 			logger.WithError(err).Debug("Client disconnected during range transfer")
 		}
+		return
 	}
 
-	logger.WithField("size", fullObj.Size).Info("Range request completed (full object served)")
+	logger.WithFields(logrus.Fields{
+		"start":  parsed.start,
+		"length": parsed.length,
+		"total":  info.Size,
+	}).Info("Range request completed")
+}
+
+// httpRange is a single satisfiable byte range within a resource of a known size.
+type httpRange struct {
+	start  int64
+	length int64
+}
+
+// errRangeUnsatisfiable is returned by parseRangeHeader when the header is
+// syntactically valid but cannot be satisfied for the given resource size.
+var errRangeUnsatisfiable = fmt.Errorf("range not satisfiable")
+
+// errRangeInvalid is returned by parseRangeHeader when the header is malformed.
+var errRangeInvalid = fmt.Errorf("invalid range header")
+
+// parseRangeHeader parses a single-range HTTP Range header of the form
+// "bytes=START-END", "bytes=START-", or "bytes=-SUFFIX" against the given
+// resource size. Multi-range requests are rejected as invalid because S3
+// only guarantees support for a single range per request.
+func parseRangeHeader(rangeHeader string, size int64) (httpRange, error) {
+	const prefix = "bytes="
+	if !strings.HasPrefix(rangeHeader, prefix) {
+		return httpRange{}, errRangeInvalid
+	}
+	spec := strings.TrimSpace(rangeHeader[len(prefix):])
+	if spec == "" || strings.Contains(spec, ",") {
+		return httpRange{}, errRangeInvalid
+	}
+
+	dash := strings.Index(spec, "-")
+	if dash < 0 {
+		return httpRange{}, errRangeInvalid
+	}
+
+	startStr := strings.TrimSpace(spec[:dash])
+	endStr := strings.TrimSpace(spec[dash+1:])
+
+	if startStr == "" {
+		// Suffix range: bytes=-N → last N bytes.
+		if endStr == "" {
+			return httpRange{}, errRangeInvalid
+		}
+		suffix, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil || suffix < 0 {
+			return httpRange{}, errRangeInvalid
+		}
+		if size == 0 || suffix == 0 {
+			return httpRange{}, errRangeUnsatisfiable
+		}
+		if suffix > size {
+			suffix = size
+		}
+		return httpRange{start: size - suffix, length: suffix}, nil
+	}
+
+	start, err := strconv.ParseInt(startStr, 10, 64)
+	if err != nil || start < 0 {
+		return httpRange{}, errRangeInvalid
+	}
+	if start >= size {
+		return httpRange{}, errRangeUnsatisfiable
+	}
+
+	if endStr == "" {
+		return httpRange{start: start, length: size - start}, nil
+	}
+
+	end, err := strconv.ParseInt(endStr, 10, 64)
+	if err != nil || end < 0 || end < start {
+		return httpRange{}, errRangeInvalid
+	}
+	if end >= size {
+		end = size - 1
+	}
+	return httpRange{start: start, length: end - start + 1}, nil
 }
 
 // putObject handles PUT requests for objects
