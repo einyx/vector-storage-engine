@@ -12,7 +12,7 @@
 | 2 | Round-trip | PASS |
 | 3 | GCM tamper rejection | **FAIL** |
 | 4 | Restart behavior | PASS |
-| 5 | Concurrent writes / nonce uniqueness | pending |
+| 5 | Concurrent writes / nonce uniqueness | PASS (caveat) |
 | 6 | Provider unreachable (fail-closed) | pending |
 | 7 | Log / key material leakage | pending |
 | 8 | Metrics surface | pending |
@@ -62,3 +62,16 @@ Tampered object returned HTTP 200 with 0 bytes — no auth tag check (consistent
 **Status:** PASS
 
 Object written before restart is readable after restart with same master key.
+
+## Check 5 — Concurrent writes / nonce uniqueness
+
+**Status:** PASS
+
+50 concurrent writes produced 50 distinct first-64-byte headers (proxy for
+unique nonces / envelope randomness).
+
+**Caveat:** because Check 1 confirmed encryption is unwired, those headers
+are first-64-bytes of *plaintext*, and each plaintext was crafted to be
+unique (`concurrent-$i-$(date +%s%N)`). This check therefore says nothing
+about nonce reuse — it must be re-run after the wiring fix to be
+meaningful.
