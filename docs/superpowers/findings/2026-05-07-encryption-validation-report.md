@@ -18,6 +18,7 @@
 | 8 | Metrics surface | PASS (1 metric only) |
 | 9 | Key rotation API | REVIEW (KMS-side only) |
 | 10 | Startup key validation | **FAIL** |
+| 11 | Metrics coverage | (run after Phase 2 metrics work) |
 
 ## Check 1 â€” Ciphertext on disk
 
@@ -288,9 +289,9 @@ hello-roundtrip-1778190442
 
 Got:
 ```
-lÉ”«D'
-Wu)wiÖŠß6úßß
-eG‰ÎIÓM}Æ¬a-*d6Rê|Ê
+lÉ”ï¿½D'
+Wu)wiÖŠï¿½6ï¿½ï¿½ï¿½
+eGï¿½ï¿½Iï¿½M}ï¿½ï¿½a-*d6Rï¿½|ï¿½
 ```
 
 ## Check 3 â€” GCM tamper rejection
