@@ -11,7 +11,7 @@
 | 1 | Ciphertext on disk | **FAIL** |
 | 2 | Round-trip | PASS |
 | 3 | GCM tamper rejection | **FAIL** |
-| 4 | Restart behavior | pending |
+| 4 | Restart behavior | PASS |
 | 5 | Concurrent writes / nonce uniqueness | pending |
 | 6 | Provider unreachable (fail-closed) | pending |
 | 7 | Log / key material leakage | pending |
@@ -56,3 +56,9 @@ Wrote 26 bytes; read back identical bytes.
 **Status:** FAIL
 
 Tampered object returned HTTP 200 with 0 bytes — no auth tag check (consistent with Check 1: encryption unwired, so no GCM tag exists to reject).
+
+## Check 4 — Restart behavior
+
+**Status:** PASS
+
+Object written before restart is readable after restart with same master key.
