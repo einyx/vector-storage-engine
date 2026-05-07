@@ -3,9 +3,15 @@ package encryption
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"io"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/prysmsh/warp-storage-engine/internal/config"
 	"github.com/prysmsh/warp-storage-engine/internal/encryption/types"
+	"github.com/prysmsh/warp-storage-engine/internal/metrics"
 )
 
 func TestNewManager(t *testing.T) {
@@ -86,5 +92,55 @@ func TestManager_GetKeyProvider_GetEncryptor(t *testing.T) {
 	}
 	if m.GetEncryptor() != nil {
 		t.Error("expected nil encryptor")
+	}
+}
+
+func buildTestManager(t *testing.T, m *metrics.Metrics) *Manager {
+	t.Helper()
+	masterKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg := &config.EncryptionConfig{
+		Enabled:     true,
+		Algorithm:   "AES-256-GCM",
+		KeyProvider: "local",
+		Local:       &config.LocalKeyConfig{MasterKey: masterKey},
+	}
+	mgr, err := NewFromConfig(context.Background(), cfg, m)
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	return mgr
+}
+
+func TestManager_ObjectMetrics_Encrypt(t *testing.T) {
+	m := metrics.NewMetrics("test_obj_enc_mgr_e")
+	mgr := buildTestManager(t, m)
+
+	plaintext := []byte("hello-metrics")
+	encReader, _, err := mgr.Encrypt(context.Background(), bytes.NewReader(plaintext), int64(len(plaintext)))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if _, err := io.ReadAll(encReader); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if got := testutil.ToFloat64(m.EncryptionObjectOps.WithLabelValues("encrypt", "success")); got != 1 {
+		t.Errorf("encrypt success = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.EncryptionObjectBytes.WithLabelValues("encrypt")); got != float64(len(plaintext)) {
+		t.Errorf("encrypt bytes = %v, want %d", got, len(plaintext))
+	}
+	if got := testutil.CollectAndCount(m.EncryptionObjectDuration); got < 1 {
+		t.Errorf("duration not observed")
+	}
+}
+
+func TestManager_ObjectMetrics_DisabledPassthrough(t *testing.T) {
+	m := metrics.NewMetrics("test_obj_enc_mgr_d")
+	mgr := NewManager(nil, nil, false, m)
+
+	_, _, _ = mgr.Encrypt(context.Background(), bytes.NewReader([]byte("x")), 1)
+	if got := testutil.ToFloat64(m.EncryptionDisabledPassthrough); got != 1 {
+		t.Errorf("passthrough = %v, want 1", got)
 	}
 }

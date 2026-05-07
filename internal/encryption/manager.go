@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
+	"time"
 
 	"github.com/prysmsh/warp-storage-engine/internal/encryption/types"
 	"github.com/prysmsh/warp-storage-engine/internal/metrics"
@@ -36,17 +38,29 @@ func (m *Manager) IsEnabled() bool {
 // Encrypt wraps a reader with encryption if enabled
 func (m *Manager) Encrypt(ctx context.Context, reader io.Reader, size int64) (io.Reader, map[string]string, error) {
 	if !m.enabled {
+		m.metrics.IncEncryptionDisabledPassthrough()
 		return reader, nil, nil
 	}
 
-	return m.encryptor.Encrypt(ctx, reader, size)
+	start := time.Now()
+	encReader, meta, err := m.encryptor.Encrypt(ctx, reader, size)
+	m.metrics.ObserveEncryptionObjectDuration("encrypt", time.Since(start))
+	if err != nil {
+		m.metrics.IncEncryptionObjectOp("encrypt", "error")
+		return encReader, meta, err
+	}
+	m.metrics.IncEncryptionObjectOp("encrypt", "success")
+	if size > 0 {
+		m.metrics.IncEncryptionObjectBytes("encrypt", size)
+	}
+	return encReader, meta, nil
 }
 
 // Decrypt wraps a reader with decryption if needed
 func (m *Manager) Decrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, error) {
 	// Check if object is encrypted
 	if metadata[types.MetadataKeyAlgorithm] == "" {
-		// Not encrypted, return original reader
+		m.metrics.IncEncryptionDisabledPassthrough()
 		return reader, nil
 	}
 
@@ -54,7 +68,20 @@ func (m *Manager) Decrypt(ctx context.Context, reader io.Reader, metadata map[st
 		return nil, fmt.Errorf("encryption is disabled but object is encrypted")
 	}
 
-	return m.encryptor.Decrypt(ctx, reader, metadata)
+	start := time.Now()
+	decReader, err := m.encryptor.Decrypt(ctx, reader, metadata)
+	m.metrics.ObserveEncryptionObjectDuration("decrypt", time.Since(start))
+	if err != nil {
+		m.metrics.IncEncryptionObjectOp("decrypt", "error")
+		return decReader, err
+	}
+	m.metrics.IncEncryptionObjectOp("decrypt", "success")
+	if encSize, ok := metadata[types.MetadataKeyEncryptedSize]; ok {
+		if n, parseErr := strconv.ParseInt(encSize, 10, 64); parseErr == nil && n > 0 {
+			m.metrics.IncEncryptionObjectBytes("decrypt", n)
+		}
+	}
+	return decReader, nil
 }
 
 // ShouldEncrypt determines if an object should be encrypted based on bucket policies

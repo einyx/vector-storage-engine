@@ -69,7 +69,7 @@ func TestAzureEncryptionIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	encryptor := stream.NewSimpleAESGCMEncryptor(keyProvider)
-	encryptionManager := encryption.NewManager(keyProvider, encryptor, true)
+	encryptionManager := encryption.NewManager(keyProvider, encryptor, true, nil)
 
 	// Create encrypted backend
 	encryptedBackend := NewEncryptedBackend(azureBackend, encryptionManager)
@@ -271,7 +271,7 @@ func BenchmarkAzureEncryption(b *testing.B) {
 	azureBackend, _ := NewAzureBackend(azureConfig)
 	keyProvider, _ := keys.NewLocalKeyProvider(masterKey)
 	encryptor := stream.NewSimpleAESGCMEncryptor(keyProvider)
-	encryptionManager := encryption.NewManager(keyProvider, encryptor, true)
+	encryptionManager := encryption.NewManager(keyProvider, encryptor, true, nil)
 	encryptedBackend := NewEncryptedBackend(azureBackend, encryptionManager)
 
 	ctx := context.Background()
