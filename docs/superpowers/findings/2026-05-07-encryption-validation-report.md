@@ -15,9 +15,9 @@
 | 5 | Concurrent writes / nonce uniqueness | PASS (caveat) |
 | 6 | Provider unreachable (fail-closed) | **FAIL** |
 | 7 | Log / key material leakage | PASS (caveat) |
-| 8 | Metrics surface | pending |
-| 9 | Key rotation API | pending |
-| 10 | Startup key validation | pending |
+| 8 | Metrics surface | PASS (1 metric only) |
+| 9 | Key rotation API | REVIEW (KMS-side only) |
+| 10 | Startup key validation | **FAIL** |
 
 ## Check 1 — Ciphertext on disk
 
@@ -109,4 +109,60 @@ No plaintext canary or master key bytes in logs. Sample long base64 strings (rev
 
 ```
 (none)
+```
+
+## Check 8 — Metrics surface
+
+**Status:** PASS
+
+Encryption-related metrics found:
+
+```
+foundation_storage_engine_kms_data_keys_active 0
+```
+
+## Check 9 — Key rotation API
+
+**Status:** REVIEW
+
+Rotation-related symbols found — manual review needed.
+
+Source hits:
+```
+internal/kms/config.go:42:		EnableKeyRotation: cfg.EnableKeyRotation,
+internal/kms/manager.go:33:	EnableKeyRotation bool              `yaml:"enable_key_rotation" json:"enable_key_rotation"`
+internal/kms/manager.go:314:// GetKeyRotationStatus checks if key rotation is enabled
+internal/kms/manager.go:315:func (m *Manager) GetKeyRotationStatus(ctx context.Context, keyID string) (bool, error) {
+internal/kms/manager.go:324:	resp, err := m.client.GetKeyRotationStatus(ctx, &kms.GetKeyRotationStatusInput{
+internal/kms/manager.go:328:		return false, fmt.Errorf("failed to get key rotation status: %w", err)
+internal/kms/manager.go:331:	return resp.KeyRotationEnabled, nil
+internal/kms/manager.go:334:// EnableKeyRotation enables automatic key rotation
+internal/kms/manager.go:335:func (m *Manager) EnableKeyRotation(ctx context.Context, keyID string) error {
+internal/kms/manager.go:344:	_, err := m.client.EnableKeyRotation(ctx, &kms.EnableKeyRotationInput{
+internal/kms/manager.go:348:		return fmt.Errorf("failed to enable key rotation: %w", err)
+```
+
+Endpoint hits:
+```
+(none)
+```
+
+## Check 10 — Startup key validation
+
+**Status:** FAIL
+
+Engine reached healthy state with empty master key — startup validation gap.
+
+Log tail:
+```
+[36mINFO[0m[2026/05/07 - 21:29:41] Starting S3 proxy server                      [36mcommit[0m=none [36mdate[0m=unknown [36mnum_cpu[0m=10 [36mversion[0m=dev
+[36mINFO[0m[2026/05/07 - 21:29:41] Configuration loaded                          [36mauth_type[0m=basic [36mlisten_addr[0m=":8080" [36ms3_config[0m="map[ignore_headers:true region:us-east-1]" [36mstorage_provider[0m=s3
+[36mINFO[0m[2026/05/07 - 21:29:41] Using custom S3 endpoint                      [36mendpoint[0m="http://minio:9000"
+[36mINFO[0m[2026/05/07 - 21:29:41] Using static AWS credentials                 
+[36mINFO[0m[2026/05/07 - 21:29:41] AWS credentials resolved                      [36mhasAccessKey[0m=true [36mprovider[0m=StaticProvider
+[36mINFO[0m[2026/05/07 - 21:29:41] S3 backend created                            [36mendpoint[0m="http://minio:9000" [36mregion[0m=us-east-1 [36musePathStyle[0m=true
+[36mINFO[0m[2026/05/07 - 21:29:41] Authentication provider initialized          
+[36mINFO[0m[2026/05/07 - 21:29:41] API documentation available at /docs/ and /api/docs/ 
+[36mINFO[0m[2026/05/07 - 21:29:41] Starting HTTP server with configured timeouts  [36midleTimeout[0m=2m0s [36mlisten[0m=":8080" [36mreadTimeout[0m=0s [36mwriteTimeout[0m=0s
+[36mINFO[0m[2026/05/07 - 21:29:41] Server listening                              [36maddr[0m=":8080"
 ```
