@@ -166,3 +166,98 @@ Log tail:
 [36mINFO[0m[2026/05/07 - 21:29:41] Starting HTTP server with configured timeouts  [36midleTimeout[0m=2m0s [36mlisten[0m=":8080" [36mreadTimeout[0m=0s [36mwriteTimeout[0m=0s
 [36mINFO[0m[2026/05/07 - 21:29:41] Server listening                              [36maddr[0m=":8080"
 ```
+
+---
+
+## Conclusions
+
+### Headline finding
+
+**Encryption is configured but not wired into the request path.** The
+engine ships a complete envelope-encryption stack (`internal/encryption`,
+`internal/kms` with AES-256-GCM and AWS / Azure / custom / local
+providers) and faithfully constructs an `encryption.Manager` when
+`ENCRYPTION_ENABLED=true`, but no production call site wraps the storage
+backend with `EncryptedBackend`. Objects are written to MinIO as
+plaintext regardless of configuration. Until this wiring is fixed, every
+data-plane behavior of "encryption" is fictional.
+
+### Confirmed working
+
+- **Check 2 — Round-trip:** PUT/GET works end-to-end. Storage path is
+  functionally correct; only encryption is missing.
+- **Check 4 — Restart behavior:** State survives engine restart (this
+  is trivially true today since nothing is encrypted, but the test
+  harness is sound for re-running post-fix).
+- **Check 7 — Log/key material leakage:** No plaintext canary or master
+  key bytes observed in logs. **Caveat:** since no encryption ops are
+  occurring, there is also no DEK material to leak. Re-run after wiring
+  to draw a real conclusion.
+- **Check 8 — Metrics surface:** A single encryption-related metric
+  exists (`foundation_storage_engine_kms_data_keys_active`). Skeleton
+  is in place but coverage is thin.
+
+### Gaps identified
+
+1. **Encryption not wired (Check 1, FAIL).** The dominant gap. Every
+   other negative finding flows from this.
+2. **No GCM tamper rejection (Check 3, FAIL).** Direct consequence of
+   #1 — there is no auth tag on disk to verify.
+3. **Fail-open with invalid master key (Check 6, FAIL).** Engine
+   accepted writes (HTTP 200) when started with a malformed
+   `ENCRYPTION_LOCAL_MASTER_KEY`. Master key validity is not enforced
+   at startup, and the bad value never reaches a real encrypt operation
+   because of #1.
+4. **No startup validation (Check 10, FAIL).** Engine reaches healthy
+   state with an empty master key. Should refuse to start when
+   `ENCRYPTION_ENABLED=true` but the key provider cannot produce a
+   working key.
+5. **No data-plane key rotation (Check 9, REVIEW).** The codebase has
+   `EnableKeyRotation` / `GetKeyRotationStatus` symbols, but they are
+   thin wrappers around the AWS KMS API for rotating a CMK on the AWS
+   side. There is no DEK rewrap, no per-object key version, and no
+   admin endpoint to trigger or monitor rotation. Rotation is a Phase 2
+   green-field design.
+6. **Sparse encryption metrics (Check 8, PASS but thin).** Only one
+   metric (`kms_data_keys_active`). No counters for encrypt/decrypt
+   ops, DEK cache hit/miss, KMS calls, errors, or rotation events.
+
+### Phase 2 hardening candidates
+
+Listed in priority order; each ties back to a specific check above.
+
+1. **Wire `EncryptedBackend` into the production backend chain**
+   (root cause of Checks 1, 3). Whatever `cmd/warp-storage-engine`
+   constructs as the storage backend should be wrapped when
+   `cfg.Encryption.Enabled`. Add an integration test that asserts raw
+   bytes on the underlying backend are not the plaintext canary.
+2. **Mandatory startup key validation** (Checks 6, 10). When encryption
+   is enabled, the engine must call the key provider once during
+   startup, generate a test DEK, encrypt+decrypt a known plaintext, and
+   refuse to begin serving traffic on any failure. Empty / malformed
+   master keys must be rejected before the listener binds.
+3. **Fail-closed semantics on key provider errors** (Check 6). If a
+   per-request key derivation or DEK fetch fails at runtime, return
+   5xx; never silently fall through to plaintext.
+4. **Data-plane key rotation design** (Check 9). Per-object DEK
+   versioning, master-key rotation that triggers DEK rewrap, an admin
+   endpoint exposing rotation state and progress.
+5. **Encryption metric set** (Check 8). At minimum: counters for
+   `encrypt_ops_total{result}`, `decrypt_ops_total{result}`,
+   `dek_cache_{hit,miss,evict}_total`, `kms_calls_total{op,result}`,
+   `key_rotation_events_total`, plus latency histograms for KMS calls.
+6. **Re-run all checks** (especially Checks 5 and 7) after #1 is fixed.
+   Their PASS results are currently meaningless because no encryption
+   activity is happening.
+
+### Notes on what was NOT validated
+
+- Real cloud-KMS behavior (latency, IAM denial, alias resolution,
+  network partition). Cannot be exercised without AWS / Azure access.
+- AES-GCM cryptographic correctness (nonce construction, AAD usage,
+  key-derivation discipline). Out of scope; requires a separate
+  crypto-focused review.
+- Streaming / multipart upload path. Only single-shot PUT was used.
+- The `pkg/vector` subsystem — its WAL and segment files are out of
+  scope for this report and are not encrypted regardless of any fix
+  applied above.
