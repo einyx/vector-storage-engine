@@ -9,7 +9,7 @@
 | # | Check | Status |
 |---|-------|--------|
 | 1 | Ciphertext on disk | **FAIL** |
-| 2 | Round-trip | pending |
+| 2 | Round-trip | PASS |
 | 3 | GCM tamper rejection | pending |
 | 4 | Restart behavior | pending |
 | 5 | Concurrent writes / nonce uniqueness | pending |
@@ -44,3 +44,9 @@ This is the dominant Phase 2 finding: encryption is unwired in the request
 path. All subsequent checks in this report observe behavior of a system
 that is effectively running with encryption disabled, regardless of
 configuration.
+
+## Check 2 — Round-trip
+
+**Status:** PASS
+
+Wrote 26 bytes; read back identical bytes.
