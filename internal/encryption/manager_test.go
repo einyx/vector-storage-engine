@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewManager(t *testing.T) {
-	m := NewManager(nil, nil, false)
+	m := NewManager(nil, nil, false, nil)
 	if m == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -25,7 +25,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestManager_Encrypt_Disabled(t *testing.T) {
-	m := NewManager(nil, nil, false)
+	m := NewManager(nil, nil, false, nil)
 	r := bytes.NewReader([]byte("data"))
 	out, meta, err := m.Encrypt(context.Background(), r, 4)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestManager_Encrypt_Disabled(t *testing.T) {
 }
 
 func TestManager_Decrypt_NotEncrypted(t *testing.T) {
-	m := NewManager(nil, nil, true)
+	m := NewManager(nil, nil, true, nil)
 	r := bytes.NewReader([]byte("data"))
 	out, err := m.Decrypt(context.Background(), r, nil)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestManager_Decrypt_NotEncrypted(t *testing.T) {
 }
 
 func TestManager_Decrypt_DisabledButEncrypted(t *testing.T) {
-	m := NewManager(nil, nil, false)
+	m := NewManager(nil, nil, false, nil)
 	r := bytes.NewReader([]byte("x"))
 	meta := map[string]string{types.MetadataKeyAlgorithm: "AES-256-GCM"}
 	_, err := m.Decrypt(context.Background(), r, meta)
@@ -69,18 +69,18 @@ func TestManager_Decrypt_DisabledButEncrypted(t *testing.T) {
 }
 
 func TestManager_ShouldEncrypt(t *testing.T) {
-	m := NewManager(nil, nil, false)
+	m := NewManager(nil, nil, false, nil)
 	if m.ShouldEncrypt("bucket") {
 		t.Error("ShouldEncrypt(disabled) should be false")
 	}
-	m2 := NewManager(nil, nil, true)
+	m2 := NewManager(nil, nil, true, nil)
 	if !m2.ShouldEncrypt("bucket") {
 		t.Error("ShouldEncrypt(enabled) should be true")
 	}
 }
 
 func TestManager_GetKeyProvider_GetEncryptor(t *testing.T) {
-	m := NewManager(nil, nil, true)
+	m := NewManager(nil, nil, true, nil)
 	if m.GetKeyProvider() != nil {
 		t.Error("expected nil key provider")
 	}

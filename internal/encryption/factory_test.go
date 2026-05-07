@@ -26,7 +26,7 @@ func TestNewFromConfig_LocalProvider(t *testing.T) {
 		},
 	}
 
-	manager, err := NewFromConfig(context.Background(), cfg)
+	manager, err := NewFromConfig(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatalf("expected local provider to initialise, got error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestNewFromConfig_LocalProviderInvalidKey(t *testing.T) {
 		},
 	}
 
-	if _, err := NewFromConfig(context.Background(), cfg); err == nil {
+	if _, err := NewFromConfig(context.Background(), cfg, nil); err == nil {
 		t.Fatal("expected error for invalid base64 master key, got nil")
 	}
 }
@@ -56,7 +56,7 @@ func TestNewFromConfig_LocalProviderInvalidKey(t *testing.T) {
 func TestNewFromConfig_Disabled(t *testing.T) {
 	t.Parallel()
 
-	manager, err := NewFromConfig(context.Background(), &config.EncryptionConfig{Enabled: false})
+	manager, err := NewFromConfig(context.Background(), &config.EncryptionConfig{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("expected disabled manager without error, got: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNewFromConfig_InvalidProvider(t *testing.T) {
 		KeyProvider: "unsupported",
 	}
 
-	if _, err := NewFromConfig(context.Background(), cfg); err == nil {
+	if _, err := NewFromConfig(context.Background(), cfg, nil); err == nil {
 		t.Fatal("expected error for unsupported provider")
 	}
 }
@@ -92,7 +92,7 @@ func TestNewFromConfig_LocalProviderMissingMasterKey(t *testing.T) {
 		Local:       &config.LocalKeyConfig{MasterKey: ""},
 	}
 
-	if _, err := NewFromConfig(context.Background(), cfg); err == nil {
+	if _, err := NewFromConfig(context.Background(), cfg, nil); err == nil {
 		t.Fatal("expected error when local master key empty")
 	}
 }
@@ -106,7 +106,7 @@ func TestNewFromConfig_KMSRequiresKeyID(t *testing.T) {
 		KMS:         &config.KMSKeyConfig{DefaultKeyID: ""},
 	}
 
-	if _, err := NewFromConfig(context.Background(), cfg); err == nil {
+	if _, err := NewFromConfig(context.Background(), cfg, nil); err == nil {
 		t.Fatal("expected error when KMS key ID empty")
 	}
 }
@@ -128,7 +128,7 @@ func TestNewFromConfig_NamedLocalProvider(t *testing.T) {
 		},
 	}
 
-	manager, err := NewFromConfig(context.Background(), cfg)
+	manager, err := NewFromConfig(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatalf("expected manager for named local provider, got error: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/prysmsh/warp-storage-engine/internal/encryption/types"
+	"github.com/prysmsh/warp-storage-engine/internal/metrics"
 )
 
 // Manager coordinates encryption operations
@@ -14,14 +15,16 @@ type Manager struct {
 	keyProvider types.KeyProvider
 	encryptor   types.Encryptor
 	enabled     bool
+	metrics     *metrics.Metrics
 }
 
-// NewManager creates a new encryption manager
-func NewManager(keyProvider types.KeyProvider, encryptor types.Encryptor, enabled bool) *Manager {
+// NewManager creates a new encryption manager. m may be nil.
+func NewManager(keyProvider types.KeyProvider, encryptor types.Encryptor, enabled bool, m *metrics.Metrics) *Manager {
 	return &Manager{
 		keyProvider: keyProvider,
 		encryptor:   encryptor,
 		enabled:     enabled,
+		metrics:     m,
 	}
 }
 

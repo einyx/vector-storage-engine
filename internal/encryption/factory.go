@@ -10,16 +10,17 @@ import (
 	"github.com/prysmsh/warp-storage-engine/internal/encryption/stream"
 	"github.com/prysmsh/warp-storage-engine/internal/encryption/types"
 	"github.com/prysmsh/warp-storage-engine/internal/kms"
+	"github.com/prysmsh/warp-storage-engine/internal/metrics"
 )
 
-// NewFromConfig creates an encryption manager from configuration
-func NewFromConfig(ctx context.Context, cfg *config.EncryptionConfig) (*Manager, error) {
+// NewFromConfig creates an encryption manager from configuration. m may be nil.
+func NewFromConfig(ctx context.Context, cfg *config.EncryptionConfig, m *metrics.Metrics) (*Manager, error) {
 	if !cfg.Enabled {
-		return &Manager{enabled: false}, nil
+		return &Manager{enabled: false, metrics: m}, nil
 	}
 
 	// Create key provider
-	keyProvider, err := createKeyProvider(ctx, cfg)
+	keyProvider, err := createKeyProvider(ctx, cfg, m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create key provider: %w", err)
 	}
@@ -30,16 +31,16 @@ func NewFromConfig(ctx context.Context, cfg *config.EncryptionConfig) (*Manager,
 		return nil, fmt.Errorf("failed to create encryptor: %w", err)
 	}
 
-	return NewManager(keyProvider, encryptor, true), nil
+	return NewManager(keyProvider, encryptor, true, m), nil
 }
 
 // createKMSProvider creates a KMS provider from a provider config
-func createKMSProvider(ctx context.Context, cfg *config.ProviderConfig) (types.KeyProvider, error) {
+func createKMSProvider(ctx context.Context, cfg *config.ProviderConfig, m *metrics.Metrics) (types.KeyProvider, error) {
 	// Convert KMS provider to encryption key provider adapter
 	kmsProvider, err := kms.NewProvider(ctx, &kms.ProviderConfig{
 		Type:   kms.ProviderType(cfg.Type),
 		Config: cfg.Config,
-	}, nil)
+	}, m)
 	if err != nil {
 		return nil, err
 	}
@@ -48,11 +49,11 @@ func createKMSProvider(ctx context.Context, cfg *config.ProviderConfig) (types.K
 	return NewKMSKeyProviderAdapter(kmsProvider), nil
 }
 
-func createKeyProvider(ctx context.Context, cfg *config.EncryptionConfig) (types.KeyProvider, error) {
+func createKeyProvider(ctx context.Context, cfg *config.EncryptionConfig, m *metrics.Metrics) (types.KeyProvider, error) {
 	// Check if we have a named provider first
 	if providerName := cfg.KeyProvider; providerName != "" {
 		if namedProvider, ok := cfg.KeyProviders[providerName]; ok {
-			return createKMSProvider(ctx, &namedProvider)
+			return createKMSProvider(ctx, &namedProvider, m)
 		}
 	}
 
@@ -86,7 +87,7 @@ func createKeyProvider(ctx context.Context, cfg *config.EncryptionConfig) (types
 				"key_spec":           cfg.KMS.KeySpec,
 			},
 		}
-		return createKMSProvider(ctx, providerCfg)
+		return createKMSProvider(ctx, providerCfg, m)
 
 	case "azure-keyvault", "azure-kv":
 		if cfg.AzureKV == nil || cfg.AzureKV.VaultURL == "" {
@@ -104,7 +105,7 @@ func createKeyProvider(ctx context.Context, cfg *config.EncryptionConfig) (types
 				"data_key_cache_ttl": cfg.AzureKV.DataKeyCacheTTL,
 			},
 		}
-		return createKMSProvider(ctx, providerCfg)
+		return createKMSProvider(ctx, providerCfg, m)
 
 	case "custom":
 		if cfg.Custom == nil || (cfg.Custom.MasterKey == "" && cfg.Custom.MasterKeyFile == "") {
@@ -120,7 +121,7 @@ func createKeyProvider(ctx context.Context, cfg *config.EncryptionConfig) (types
 				"data_key_cache_ttl":  cfg.Custom.DataKeyCacheTTL,
 			},
 		}
-		return createKMSProvider(ctx, providerCfg)
+		return createKMSProvider(ctx, providerCfg, m)
 
 	default:
 		return nil, fmt.Errorf("unsupported key provider: %s", cfg.KeyProvider)
