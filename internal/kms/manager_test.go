@@ -295,13 +295,13 @@ func TestNewProvider(t *testing.T) {
 	// Local provider
 	p, err := NewProvider(ctx, &ProviderConfig{Type: ProviderTypeLocal, Config: map[string]interface{}{
 		"master_key": hex.EncodeToString(make([]byte, 32)),
-	}})
+	}}, nil)
 	assert.NoError(t, err)
 	require.NotNil(t, p)
 	assert.Equal(t, string(ProviderTypeLocal), p.Name())
 
 	// Unsupported type
-	_, err = NewProvider(ctx, &ProviderConfig{Type: ProviderType("invalid")})
+	_, err = NewProvider(ctx, &ProviderConfig{Type: ProviderType("invalid")}, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported provider type")
 }

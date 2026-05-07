@@ -39,7 +39,7 @@ func createKMSProvider(ctx context.Context, cfg *config.ProviderConfig) (types.K
 	kmsProvider, err := kms.NewProvider(ctx, &kms.ProviderConfig{
 		Type:   kms.ProviderType(cfg.Type),
 		Config: cfg.Config,
-	})
+	}, nil)
 	if err != nil {
 		return nil, err
 	}
