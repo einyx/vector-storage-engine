@@ -39,7 +39,7 @@ fi
 
 # mc cp from the host, with the raw file mounted into the mc container.
 docker run --rm -i \
-  --network encryption-validation-phase1_default \
+  --network "${COMPOSE_NETWORK:-encryption-metrics_default}" \
   -e MC_HOST_${MINIO_ALIAS}=http://minioadmin:minioadmin@minio:9000 \
   -v "${RAW}:/tmp/raw.bin:ro" \
   minio/mc:latest cp --attr "${ATTRS}" /tmp/raw.bin "${MINIO_ALIAS}/${TEST_BUCKET}/${KEY}" >/dev/null

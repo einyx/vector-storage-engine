@@ -115,11 +115,16 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		}
 	}
 
+	// Build the metrics handle before encryption so KMS / encryption layers can
+	// record into the shared registry. NewMetrics is a sync.Once singleton, so
+	// reusing this handle below is fine.
+	metricsHandle := metrics.NewMetrics("foundation_storage_engine")
+
 	// Wrap with encryption if enabled. Encryption is the outermost storage
 	// layer so cache (if present) holds ciphertext, not plaintext.
 	if cfg.Encryption.Enabled {
 		ctx := context.Background()
-		encManager, err := encryption.NewFromConfig(ctx, &cfg.Encryption)
+		encManager, err := encryption.NewFromConfig(ctx, &cfg.Encryption, metricsHandle)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create encryption manager: %w", err)
 		}
@@ -189,7 +194,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		storage: storageBackend,
 		auth:    authProvider,
 		router:  mux.NewRouter(),
-		metrics: metrics.NewMetrics("foundation_storage_engine"),
+		metrics: metricsHandle,
 		db:      db,
 	}
 

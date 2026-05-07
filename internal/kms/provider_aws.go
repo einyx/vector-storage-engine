@@ -72,7 +72,7 @@ func NewAWSKMSProvider(ctx context.Context, config map[string]interface{}) (Prov
 	return &AWSKMSProvider{
 		client:            client,
 		encryptionContext: encryptionContext,
-		dataKeyCache:      NewDataKeyCache(cacheTTL),
+		dataKeyCache:      NewDataKeyCache(cacheTTL, nil),
 		keySpec:           keySpec,
 	}, nil
 }

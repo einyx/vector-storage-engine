@@ -135,7 +135,7 @@ func TestEnvelopeEncryption(t *testing.T) {
 			DefaultKeyID: "test-key",
 		},
 		keyCache:     make(map[string]*KeyInfo),
-		dataKeyCache: NewDataKeyCache(5 * time.Minute),
+		dataKeyCache: NewDataKeyCache(5*time.Minute, nil),
 	}
 
 	t.Run("EncryptDecrypt", func(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/prysmsh/warp-storage-engine/internal/metrics"
 )
 
 // DataKey represents a KMS data key for envelope encryption
@@ -24,6 +26,7 @@ type DataKeyCache struct {
 	mu       sync.RWMutex
 	ttl      time.Duration
 	stopChan chan struct{}
+	metrics  *metrics.Metrics
 }
 
 type cacheEntry struct {
@@ -31,8 +34,8 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
-// NewDataKeyCache creates a new data key cache
-func NewDataKeyCache(ttl time.Duration) *DataKeyCache {
+// NewDataKeyCache creates a new data key cache. m may be nil.
+func NewDataKeyCache(ttl time.Duration, m *metrics.Metrics) *DataKeyCache {
 	if ttl <= 0 {
 		ttl = 5 * time.Minute // Default TTL
 	}
@@ -41,11 +44,10 @@ func NewDataKeyCache(ttl time.Duration) *DataKeyCache {
 		cache:    make(map[string]*cacheEntry),
 		ttl:      ttl,
 		stopChan: make(chan struct{}),
+		metrics:  m,
 	}
 
-	// Start cleanup goroutine
 	go c.cleanupLoop()
-
 	return c
 }
 
@@ -60,14 +62,17 @@ func (c *DataKeyCache) Get(key string) *DataKey {
 
 	entry, ok := c.cache[key]
 	if !ok || entry == nil {
+		c.metrics.IncKMSCacheMiss("dek")
 		return nil
 	}
 
 	// Check if expired
 	if time.Now().After(entry.expiresAt) {
+		c.metrics.IncKMSCacheMiss("dek")
 		return nil
 	}
 
+	c.metrics.IncKMSCacheHit("dek")
 	return entry.dataKey
 }
 

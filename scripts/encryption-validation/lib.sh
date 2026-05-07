@@ -23,7 +23,7 @@ report_section() {
 mc_cmd() {
   # Run mc inside the compose network so it can reach the minio service by name.
   docker run --rm -i \
-    --network encryption-validation-phase1_default \
+    --network "${COMPOSE_NETWORK:-encryption-metrics_default}" \
     -e MC_HOST_${MINIO_ALIAS}=http://minioadmin:minioadmin@minio:9000 \
     minio/mc:latest "$@"
 }

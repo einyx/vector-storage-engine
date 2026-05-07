@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestNewMetrics(t *testing.T) {
@@ -532,6 +534,32 @@ func BenchmarkGetStats(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = m.GetStats()
+	}
+}
+
+func TestObjectEncryptionMetrics_Helpers(t *testing.T) {
+	m := NewMetrics("test_obj_enc")
+
+	m.IncEncryptionObjectOp("encrypt", "success")
+	m.IncEncryptionObjectOp("decrypt", "error")
+	m.IncEncryptionObjectBytes("encrypt", 1024)
+	m.ObserveEncryptionObjectDuration("encrypt", 5*time.Millisecond)
+	m.IncEncryptionDisabledPassthrough()
+
+	if got := testutil.ToFloat64(m.EncryptionObjectOps.WithLabelValues("encrypt", "success")); got != 1 {
+		t.Errorf("encrypt success = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.EncryptionObjectOps.WithLabelValues("decrypt", "error")); got != 1 {
+		t.Errorf("decrypt error = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.EncryptionObjectBytes.WithLabelValues("encrypt")); got != 1024 {
+		t.Errorf("encrypt bytes = %v, want 1024", got)
+	}
+	if got := testutil.CollectAndCount(m.EncryptionObjectDuration); got != 1 {
+		t.Errorf("duration histogram count = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.EncryptionDisabledPassthrough); got != 1 {
+		t.Errorf("passthrough = %v, want 1", got)
 	}
 }
 

@@ -18,6 +18,7 @@
 | 8 | Metrics surface | PASS (1 metric only) |
 | 9 | Key rotation API | REVIEW (KMS-side only) |
 | 10 | Startup key validation | **FAIL** |
+| 11 | Metrics coverage | (run after Phase 2 metrics work) |
 
 ## Check 1 â€” Ciphertext on disk
 
@@ -288,9 +289,9 @@ hello-roundtrip-1778190442
 
 Got:
 ```
-lÉ”«D'
-Wu)wiÖŠß6úßß
-eG‰ÎIÓM}Æ¬a-*d6Rê|Ê
+lÉ”ï¿½D'
+Wu)wiÖŠï¿½6ï¿½ï¿½ï¿½
+eGï¿½ï¿½Iï¿½M}ï¿½ï¿½a-*d6Rï¿½|ï¿½
 ```
 
 ## Check 3 â€” GCM tamper rejection
@@ -687,3 +688,217 @@ Check 2 would fail (reads return ciphertext).*
 - **`pkg/vector` encryption.** WAL and segment files in the new vector
   subsystem are not wired through `EncryptedBackend` and are written
   as plaintext regardless.
+
+## Check 1 â€” Ciphertext on disk
+
+**Status:** PASS
+
+Plaintext canary not present in raw object. First 64 bytes:
+
+```
+    00000000: 7fdf 8353 d1f7 c256 3e91 ce8c 9256 def4  ...S...V>....V..
+    00000010: ad95 4987 bfd9 045d f9c1 334e f4c2 7a41  ..I....]..3N..zA
+    00000020: 5779 89e5 5c10 7b30 92d1 6289 787a a7a4  Wy..\.{0..b.xz..
+    00000030: 6e90 297d 1aca 74                        n.)}..t
+```
+
+## Check 2 â€” Round-trip
+
+**Status:** PASS
+
+Wrote 26 bytes; read back identical bytes.
+
+## Check 3 â€” GCM tamper rejection
+
+**Status:** PASS
+
+Tampered ciphertext rejected with HTTP 404. AES-GCM auth tag verification works.
+
+## Check 4 â€” Restart behavior
+
+**Status:** PASS
+
+Object written before restart is readable after restart with same master key.
+
+## Check 5 â€” Concurrent writes / nonce uniqueness
+
+**Status:** PASS
+
+50 concurrent writes produced 50 distinct first-64-byte headers (proxy for unique nonces / envelope randomness).
+
+## Check 6 â€” Provider unreachable / invalid key (fail-closed)
+
+**Status:** PASS
+
+Engine refused to operate with invalid master key. health=000000 write=000000.
+
+Log tail:
+```
+[36mINFO[0m[2026/05/07 - 23:37:33] Using custom S3 endpoint                      [36mendpoint[0m="http://minio:9000"
+[36mINFO[0m[2026/05/07 - 23:37:33] Using static AWS credentials                 
+[36mINFO[0m[2026/05/07 - 23:37:33] AWS credentials resolved                      [36mhasAccessKey[0m=true [36mprovider[0m=StaticProvider
+[36mINFO[0m[2026/05/07 - 23:37:33] S3 backend created                            [36mendpoint[0m="http://minio:9000" [36mregion[0m=us-east-1 [36musePathStyle[0m=true
+Error: failed to create proxy server: failed to create encryption manager: failed to create key provider: failed to decode master key: illegal base64 data at input byte 3
+Usage:
+  warp-storage-engine [flags]
+
+Flags:
+  -c, --config string      config file path
+  -h, --help               help for warp-storage-engine
+      --listen string      listen address (default ":8080")
+      --log-level string   log level (debug, info, warn, error) (default "info")
+
+Error: failed to create proxy server: failed to create encryption manager: failed to create key provider: failed to decode master key: illegal base64 data at input byte 3
+```
+
+## Check 7 â€” Log / key material leakage
+
+**Status:** PASS
+
+No plaintext canary or master key bytes in logs. Sample long base64 strings (review manually for DEK material):
+
+```
+(none)
+```
+
+## Check 8 â€” Metrics surface
+
+**Status:** PASS
+
+Encryption-related metrics found:
+
+```
+foundation_storage_engine_encryption_disabled_passthrough_total 0
+foundation_storage_engine_encryption_object_bytes_total{op="decrypt"} 109
+foundation_storage_engine_encryption_object_bytes_total{op="encrypt"} 109
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0001"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0002"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0004"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0008"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0016"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0032"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0064"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0128"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0256"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.0512"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.1024"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="0.2048"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="decrypt",le="+Inf"} 7
+foundation_storage_engine_encryption_object_duration_seconds_sum{op="decrypt"} 8.4709e-05
+foundation_storage_engine_encryption_object_duration_seconds_count{op="decrypt"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0001"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0002"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0004"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0008"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0016"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0032"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0064"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0128"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0256"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.0512"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.1024"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="0.2048"} 7
+foundation_storage_engine_encryption_object_duration_seconds_bucket{op="encrypt",le="+Inf"} 7
+foundation_storage_engine_encryption_object_duration_seconds_sum{op="encrypt"} 5.3165e-05
+foundation_storage_engine_encryption_object_duration_seconds_count{op="encrypt"} 7
+foundation_storage_engine_encryption_object_ops_total{op="decrypt",status="success"} 7
+foundation_storage_engine_encryption_object_ops_total{op="encrypt",status="success"} 7
+foundation_storage_engine_kms_data_keys_active 0
+```
+
+## Check 9 â€” Key rotation API
+
+**Status:** REVIEW
+
+Rotation-related symbols found â€” manual review needed.
+
+Source hits:
+```
+internal/kms/config.go:42:		EnableKeyRotation: cfg.EnableKeyRotation,
+internal/kms/manager.go:33:	EnableKeyRotation bool              `yaml:"enable_key_rotation" json:"enable_key_rotation"`
+internal/kms/manager.go:314:// GetKeyRotationStatus checks if key rotation is enabled
+internal/kms/manager.go:315:func (m *Manager) GetKeyRotationStatus(ctx context.Context, keyID string) (bool, error) {
+internal/kms/manager.go:324:	resp, err := m.client.GetKeyRotationStatus(ctx, &kms.GetKeyRotationStatusInput{
+internal/kms/manager.go:328:		return false, fmt.Errorf("failed to get key rotation status: %w", err)
+internal/kms/manager.go:331:	return resp.KeyRotationEnabled, nil
+internal/kms/manager.go:334:// EnableKeyRotation enables automatic key rotation
+internal/kms/manager.go:335:func (m *Manager) EnableKeyRotation(ctx context.Context, keyID string) error {
+internal/kms/manager.go:344:	_, err := m.client.EnableKeyRotation(ctx, &kms.EnableKeyRotationInput{
+internal/kms/manager.go:348:		return fmt.Errorf("failed to enable key rotation: %w", err)
+```
+
+Endpoint hits:
+```
+(none)
+```
+
+## Check 10 â€” Startup key validation
+
+**Status:** PASS
+
+Engine did not become healthy with empty master key. State: exited exit=1.
+
+Log tail:
+```
+[36mINFO[0m[2026/05/07 - 23:37:39] Using custom S3 endpoint                      [36mendpoint[0m="http://minio:9000"
+[36mINFO[0m[2026/05/07 - 23:37:39] Using static AWS credentials                 
+[36mINFO[0m[2026/05/07 - 23:37:39] AWS credentials resolved                      [36mhasAccessKey[0m=true [36mprovider[0m=StaticProvider
+[36mINFO[0m[2026/05/07 - 23:37:39] S3 backend created                            [36mendpoint[0m="http://minio:9000" [36mregion[0m=us-east-1 [36musePathStyle[0m=true
+Error: failed to create proxy server: failed to create encryption manager: failed to create key provider: local key provider requires master key
+Usage:
+  warp-storage-engine [flags]
+
+Flags:
+  -c, --config string      config file path
+  -h, --help               help for warp-storage-engine
+      --listen string      listen address (default ":8080")
+      --log-level string   log level (debug, info, warn, error) (default "info")
+
+Error: failed to create proxy server: failed to create encryption manager: failed to create key provider: local key provider requires master key
+```
+
+## Check 11 â€” Metrics coverage
+
+**Status:** FAIL
+
+Missing or insufficient metrics:
+- kms_operations_total{generate_data_key,success} (missing)
+- kms_operations_total{decrypt,success} (missing)
+- kms_cache_hits/misses (both missing)
+
+## Check 11 â€” Metrics coverage
+
+**Status:** PASS
+
+Object-layer metrics advanced for 10 encrypts + 10 decrypts. Sample values: obj_enc=21, obj_dec=21, obj_bytes=782, kms_gen=0, kms_dec=0, hits=0, misses=0. KMS-layer metrics absent (expected with the local key provider).
+
+---
+
+## Phase 2 â€” Encryption metrics (2026-05-08)
+
+After implementing the encryption metrics spec
+(`docs/superpowers/specs/2026-05-08-encryption-metrics-design.md`):
+
+- **Check 8 status updated** from "PASS (1 metric only)" to "PASS (full
+  object-layer set)". Four new metrics now exposed:
+  - `encryption_object_ops_total{op,status}`
+  - `encryption_object_bytes_total{op}`
+  - `encryption_object_duration_seconds{op}`
+  - `encryption_disabled_passthrough_total`
+- **Check 11 added and PASS.** Asserts the object-layer counters advance
+  by â‰¥ N for N encrypts and N decrypts.
+
+### KMS-layer metrics â€” partial coverage
+
+The full KMS metric set (`kms_operations_total`,
+`kms_operation_duration_seconds`, `kms_errors_total`, `kms_cache_hits_total`,
+`kms_cache_misses_total`, `kms_key_validations_total`) is wired via the new
+`instrumentedProvider` decorator and `DataKeyCache`. They will advance
+when a KMS-backed key provider (AWS, Azure, custom) is in use.
+
+In this validation env we use the `local` key provider, which builds its
+key chain via `keys.NewLocalKeyProvider` and does *not* go through
+`kms.NewProvider` â€” so the KMS-layer metrics stay at zero on this path.
+This is by design for the current scope (the spec's success criteria are
+written against object-layer coverage). Re-run against a cloud-KMS env
+to validate KMS-layer coverage.

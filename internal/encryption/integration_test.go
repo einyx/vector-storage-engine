@@ -30,7 +30,7 @@ func TestEncryptionIntegration(t *testing.T) {
 	encryptor := stream.NewSimpleAESGCMEncryptor(keyProvider)
 
 	// Create encryption manager
-	manager := encryption.NewManager(keyProvider, encryptor, true)
+	manager := encryption.NewManager(keyProvider, encryptor, true, nil)
 
 	t.Run("EncryptDecryptSmallData", func(t *testing.T) {
 		ctx := context.Background()
