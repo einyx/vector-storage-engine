@@ -1,0 +1,10 @@
+server:
+  listen: ":8080"
+
+storage:
+  provider: s3
+
+encryption:
+  enabled: true
+  algorithm: AES-256-GCM
+  key_provider: local
