@@ -1,7 +1,7 @@
 # Warp Storage Engine
 
 [![Go Version](https://img.shields.io/badge/go-1.21+-blue.svg)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/prysmsh/warp-storage-engine)](https://goreportcard.com/report/github.com/prysmsh/warp-storage-engine)
 [![Container Image](https://img.shields.io/badge/ghcr.io-einyx%2Ffoundation--storage--engine-blue?logo=docker&logoColor=white)](https://github.com/prysmsh/warp-storage-engine/pkgs/container/warp-storage-engine)
 [![CI Status](https://github.com/prysmsh/warp-storage-engine/workflows/Release/badge.svg)](https://github.com/prysmsh/warp-storage-engine/actions)
@@ -761,8 +761,10 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ## 📝 License
 
-This project is licensed under the MIT License -
-see the [LICENSE](LICENSE) file for details.
+This project is licensed under the [Business Source License 1.1](https://mariadb.com/bsl11)
+(BSL 1.1); see the [LICENSE](LICENSE) file for parameters (Additional Use Grant, Change Date,
+and Change License). After the Change Date, each version becomes available under the Change
+License stated there (Apache License, Version 2.0).
 
 ## 🙏 Acknowledgments
 
