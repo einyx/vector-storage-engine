@@ -71,7 +71,7 @@ func NewCustomProvider(ctx context.Context, config map[string]interface{}) (Prov
 	return &CustomProvider{
 		masterKey:         masterKey,
 		keyDerivationSalt: salt,
-		dataKeyCache:      NewDataKeyCache(cacheTTL),
+		dataKeyCache:      NewDataKeyCache(cacheTTL, nil),
 	}, nil
 }
 

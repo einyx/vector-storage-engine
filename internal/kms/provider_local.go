@@ -48,7 +48,7 @@ func NewLocalProvider(ctx context.Context, config map[string]interface{}) (Provi
 
 	return &LocalProvider{
 		masterKey:    masterKey,
-		dataKeyCache: NewDataKeyCache(cacheTTL),
+		dataKeyCache: NewDataKeyCache(cacheTTL, nil),
 	}, nil
 }
 
