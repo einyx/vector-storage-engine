@@ -14,7 +14,7 @@
 | 4 | Restart behavior | PASS |
 | 5 | Concurrent writes / nonce uniqueness | PASS (caveat) |
 | 6 | Provider unreachable (fail-closed) | **FAIL** |
-| 7 | Log / key material leakage | pending |
+| 7 | Log / key material leakage | PASS (caveat) |
 | 8 | Metrics surface | pending |
 | 9 | Key rotation API | pending |
 | 10 | Startup key validation | pending |
@@ -99,4 +99,14 @@ Log tail:
 [36mINFO[0m[2026/05/07 - 21:28:04] PUT object handler completed successfully     [36mbucket[0m=enc-test-bucket [36mchecksumAlgorithm[0m= [36mcontentMD5[0m= [36mcontentType[0m=application/x-www-form-urlencoded [36metag[0m="\"098f6bcd4621d373cade4e832627b4f6\"" [36misAWSCLI[0m=false [36misChunkedWithoutSize[0m=false [36misIcebergData[0m=false [36misIcebergMeta[0m=false [36misJavaClient[0m=false [36misSparkUpload[0m=false [36mkey[0m=check06/x [36mmethod[0m=PUT [36mrequestID[0m=1778189284986005881 [36mresponseHeaders[0m="map[Access-Control-Allow-Headers:[Content-Type, Authorization, X-Amz-*] Access-Control-Allow-Methods:[GET, POST, PUT, DELETE, HEAD, OPTIONS] Access-Control-Allow-Origin:[*] Content-Length:[0] Content-Security-Policy:[default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://browser.sentry-cdn.com https://*.sentry.io https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://*.sentry.io; frame-src 'self' https://*.sentry.io; frame-ancestors 'none';] Etag:[\"098f6bcd4621d373cade4e832627b4f6\"] Permissions-Policy:[accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()] Referrer-Policy:[strict-origin-when-cross-origin] Server:[AmazonS3] Strict-Transport-Security:[max-age=31536000; includeSubDomains] X-Amz-Request-Id:[1778189284986005881] X-Content-Type-Options:[nosniff] X-Frame-Options:[DENY] X-Xss-Protection:[1; mode=block]]" [36msize[0m=4 [36mstage[0m=handler_complete [36mtransferEncoding[0m= [36muserAgent[0m=curl/8.7.1
 [36mINFO[0m[2026/05/07 - 21:28:04] S3 request completed                          [36mduration[0m=7.471458ms [36mmethod[0m=PUT [36mpath[0m=/enc-test-bucket/check06/x [36mstatus[0m=200
 [FSE] 2026/05/07 - 21:28:04 | 200 |        7.63ms |    192.168.65.1 | PUT     "/enc-test-bucket/check06/x"
+```
+
+## Check 7 — Log / key material leakage
+
+**Status:** PASS
+
+No plaintext canary or master key bytes in logs. Sample long base64 strings (review manually for DEK material):
+
+```
+(none)
 ```
