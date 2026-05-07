@@ -10,7 +10,7 @@
 |---|-------|--------|
 | 1 | Ciphertext on disk | **FAIL** |
 | 2 | Round-trip | PASS |
-| 3 | GCM tamper rejection | pending |
+| 3 | GCM tamper rejection | **FAIL** |
 | 4 | Restart behavior | pending |
 | 5 | Concurrent writes / nonce uniqueness | pending |
 | 6 | Provider unreachable (fail-closed) | pending |
@@ -50,3 +50,9 @@ configuration.
 **Status:** PASS
 
 Wrote 26 bytes; read back identical bytes.
+
+## Check 3 — GCM tamper rejection
+
+**Status:** FAIL
+
+Tampered object returned HTTP 200 with 0 bytes — no auth tag check (consistent with Check 1: encryption unwired, so no GCM tag exists to reject).
