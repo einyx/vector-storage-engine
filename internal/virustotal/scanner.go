@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/sirupsen/logrus"
-	
+
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 )
 
@@ -36,19 +36,19 @@ func NewScanner(cfg *config.VirusTotalConfig) (*Scanner, error) {
 			logger:  logrus.WithField("module", "virustotal"),
 		}, nil
 	}
-	
+
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("VirusTotal API key is required when enabled")
 	}
-	
+
 	// Parse max file size
 	maxFileSize, err := parseSize(cfg.MaxFileSize)
 	if err != nil {
 		return nil, fmt.Errorf("invalid max_file_size: %w", err)
 	}
-	
+
 	client := NewClient(cfg.APIKey, maxFileSize)
-	
+
 	return &Scanner{
 		client:      client,
 		config:      cfg,
@@ -58,16 +58,27 @@ func NewScanner(cfg *config.VirusTotalConfig) (*Scanner, error) {
 	}, nil
 }
 
+// CanBufferScanForUpload reports whether an upload of known size should be fully buffered for scanning.
+func (s *Scanner) CanBufferScanForUpload(size int64) bool {
+	if s == nil || !s.enabled || s.config == nil || !s.config.ScanUploads {
+		return false
+	}
+	if size < 0 {
+		return false
+	}
+	return size <= s.maxFileSize
+}
+
 // ScanReader scans content from an io.Reader
 func (s *Scanner) ScanReader(ctx context.Context, reader io.Reader, filename string, size int64) (*ScanResult, error) {
 	if !s.enabled {
 		return nil, nil
 	}
-	
+
 	if !s.config.ScanUploads {
 		return nil, nil
 	}
-	
+
 	// Check file size
 	if size > s.maxFileSize {
 		s.logger.WithFields(logrus.Fields{
@@ -77,7 +88,7 @@ func (s *Scanner) ScanReader(ctx context.Context, reader io.Reader, filename str
 		}).Info("File too large for VirusTotal scanning")
 		return nil, nil
 	}
-	
+
 	return s.client.ScanFile(ctx, reader, filename, size)
 }
 
@@ -86,7 +97,7 @@ func (s *Scanner) ShouldBlockUpload(result *ScanResult) bool {
 	if !s.enabled || result == nil {
 		return false
 	}
-	
+
 	return s.config.BlockThreats && result.IsThreat()
 }
 
@@ -98,7 +109,7 @@ func (s *Scanner) IsEnabled() bool {
 // parseSize parses a size string like "32MB" into bytes
 func parseSize(sizeStr string) (int64, error) {
 	sizeStr = strings.TrimSpace(strings.ToUpper(sizeStr))
-	
+
 	multiplier := int64(1)
 	if strings.HasSuffix(sizeStr, "KB") {
 		multiplier = bytesPerKB
@@ -112,20 +123,20 @@ func parseSize(sizeStr string) (int64, error) {
 	} else if strings.HasSuffix(sizeStr, "B") {
 		sizeStr = strings.TrimSuffix(sizeStr, "B")
 	}
-	
+
 	value, err := strconv.ParseInt(strings.TrimSpace(sizeStr), 10, 64)
 	if err != nil {
 		return 0, err
 	}
-	
+
 	if value < 0 {
 		return 0, fmt.Errorf("size cannot be negative: %s", sizeStr)
 	}
-	
+
 	result := value * multiplier
 	if result < 0 {
 		return 0, fmt.Errorf("size overflow: %s", sizeStr)
 	}
-	
+
 	return result, nil
 }

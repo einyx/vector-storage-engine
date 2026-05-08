@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prysmsh/warp-storage-engine/internal/config"
 	"github.com/gorilla/sessions"
+	"github.com/prysmsh/warp-storage-engine/internal/config"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/square/go-jose.v2"
 	"gopkg.in/square/go-jose.v2/jwt"
@@ -32,33 +32,33 @@ func init() {
 // Auth0 configuration constants
 const (
 	// Session configuration
-	sessionName               = "auth0-session"
-	sessionMaxAge             = 24 * time.Hour
-	defaultSessionKeySize     = 32
-	
+	sessionName           = "auth0-session"
+	sessionMaxAge         = 24 * time.Hour
+	defaultSessionKeySize = 32
+
 	// JWT validation constants
-	allowedJWTAlgorithm       = "RS256"
-	jwtClockSkewTolerance     = 5 * time.Minute
-	
+	allowedJWTAlgorithm   = "RS256"
+	jwtClockSkewTolerance = 5 * time.Minute
+
 	// Cache timeouts
-	jwksCacheTTL              = 1 * time.Hour
-	tokenCacheTTL             = 15 * time.Minute
-	
+	jwksCacheTTL  = 1 * time.Hour
+	tokenCacheTTL = 15 * time.Minute
+
 	// API key configuration
-	apiKeyAccessKeyPrefix     = "fse_"
-	apiKeyMinLength           = 20
-	apiKeyMaxLength           = 128
-	defaultAPIKeyExpiration   = 90 * 24 * time.Hour // 90 days
-	
+	apiKeyAccessKeyPrefix   = "fse_"
+	apiKeyMinLength         = 20
+	apiKeyMaxLength         = 128
+	defaultAPIKeyExpiration = 90 * 24 * time.Hour // 90 days
+
 	// Security limits
-	maxGroupsPerUser          = 100
-	maxRolesPerUser           = 50
-	maxPermissionsPerUser     = 200
-	
+	maxGroupsPerUser      = 100
+	maxRolesPerUser       = 50
+	maxPermissionsPerUser = 200
+
 	// Admin role names
-	adminRole                 = "admin"
-	storageAdminRole          = "storage-admin"
-	superAdminRole            = "super-admin"
+	adminRole        = "admin"
+	storageAdminRole = "storage-admin"
+	superAdminRole   = "super-admin"
 )
 
 type Auth0Handler struct {
@@ -116,31 +116,31 @@ type CachedToken struct {
 
 // APIKey represents a user-generated API key for S3 backend access
 type APIKey struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	AccessKey   string    `json:"access_key"`
-	SecretKey   string    `json:"secret_key"`
-	UserID      string    `json:"user_id"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	AccessKey   string     `json:"access_key"`
+	SecretKey   string     `json:"secret_key"`
+	UserID      string     `json:"user_id"`
+	CreatedAt   time.Time  `json:"created_at"`
 	LastUsed    *time.Time `json:"last_used,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	Permissions []string  `json:"permissions"`
+	Permissions []string   `json:"permissions"`
 }
 
 // APIKeyStore manages API keys in memory (could be extended to use database)
 type APIKeyStore struct {
 	mu   sync.RWMutex
 	keys map[string]*APIKey // keyed by access_key
-	
+
 	// Store reference to Auth0Handler for session access
 	auth0Handler *Auth0Handler
 }
 
 // APIKeyRequest represents a request to create a new API key
 type APIKeyRequest struct {
-	Name        string    `json:"name"`
+	Name        string     `json:"name"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	Permissions []string  `json:"permissions,omitempty"`
+	Permissions []string   `json:"permissions,omitempty"`
 }
 
 func NewAuth0Handler(cfg *config.Auth0Config) *Auth0Handler {
@@ -162,7 +162,7 @@ func NewAuth0Handler(cfg *config.Auth0Config) *Auth0Handler {
 		Domain:   "", // Empty domain means current domain only
 		MaxAge:   int(cfg.SessionTimeout.Seconds()),
 		HttpOnly: true,
-		Secure:   true, // Always use secure cookies in production
+		Secure:   true,                 // Always use secure cookies in production
 		SameSite: http.SameSiteLaxMode, // Less strict to avoid cross-origin issues
 	}
 
@@ -187,7 +187,7 @@ func (h *Auth0Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	session, _ := h.store.Get(r, sessionName)
 	session.Values["state"] = state
 	err := session.Save(r, w)
-	
+
 	logrus.WithFields(logrus.Fields{
 		"state":       state,
 		"session_new": session.IsNew,
@@ -196,12 +196,12 @@ func (h *Auth0Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Build Auth0 authorization URL
 	redirectURI := getRedirectURI(r, h.config.RedirectURI)
-	
+
 	logrus.WithFields(logrus.Fields{
 		"login_redirect_uri": redirectURI,
 		"state":              state,
 	}).Debug("Redirecting to Auth0 login")
-	
+
 	authURL := fmt.Sprintf("https://%s/authorize?"+
 		"response_type=code&"+
 		"client_id=%s&"+
@@ -265,7 +265,7 @@ func (h *Auth0Handler) validateCallbackState(r *http.Request) (*sessions.Session
 
 	receivedState := r.URL.Query().Get("state")
 	sessionState := session.Values["state"]
-	
+
 	logrus.WithFields(logrus.Fields{
 		"received_state": receivedState,
 		"session_state":  sessionState,
@@ -290,14 +290,14 @@ func (h *Auth0Handler) validateCallbackState(r *http.Request) (*sessions.Session
 func (h *Auth0Handler) handleAuthenticationError(w http.ResponseWriter, r *http.Request, context string, err error) {
 	h.metrics.RecordLoginFailure()
 	logrus.WithError(err).WithField("context", context).Error("Authentication failed")
-	
+
 	h.auditLogger.LogSecurityEvent("authentication_failed", map[string]interface{}{
-		"client_ip":   r.RemoteAddr,
-		"user_agent":  r.Header.Get("User-Agent"),
-		"context":     context,
-		"error":       err.Error(),
+		"client_ip":  r.RemoteAddr,
+		"user_agent": r.Header.Get("User-Agent"),
+		"context":    context,
+		"error":      err.Error(),
 	})
-	
+
 	http.Error(w, "Authentication failed", http.StatusUnauthorized)
 }
 
@@ -394,7 +394,7 @@ func (h *Auth0Handler) processDirectoryRoles(wids interface{}, groups *interface
 // mapDirectoryRoleIDs maps Azure AD directory role IDs to friendly role names
 func (h *Auth0Handler) mapDirectoryRoleIDs(widsArray []interface{}) []string {
 	var mappedRoles []string
-	
+
 	// Directory role ID mappings
 	roleMapping := map[string][]string{
 		"62e90394-69f5-4237-9190-012177145e10": {adminRole, "global-admin"},
@@ -447,7 +447,7 @@ func (h *Auth0Handler) createUserSession(session *sessions.Session, userInfo map
 	session.Values["user_sub"] = h.safeStringValue(userInfo["sub"])
 	session.Values["user_email"] = h.safeStringValue(userInfo["email"])
 	session.Values["user_name"] = h.safeStringValue(userInfo["name"])
-	
+
 	// Set session security options
 	session.Options = &sessions.Options{
 		Path:     "/",
@@ -469,7 +469,7 @@ func (h *Auth0Handler) createUserSession(session *sessions.Session, userInfo map
 	session.Values["last_activity"] = now.Unix()
 	session.Values["expires_at"] = expiryTime.Unix() // Store as Unix timestamp, not time.Time
 	session.Values["integrity_hash"] = h.computeSessionIntegrityHash(
-		h.safeStringValue(userInfo["sub"]), 
+		h.safeStringValue(userInfo["sub"]),
 		expiryTime,
 	)
 
@@ -479,10 +479,10 @@ func (h *Auth0Handler) createUserSession(session *sessions.Session, userInfo map
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"user_sub":       h.safeStringValue(userInfo["sub"]),
-		"session_id":     session.ID,
-		"cookie_secure":  session.Options.Secure,
-		"cookie_domain":  session.Options.Domain,
+		"user_sub":      h.safeStringValue(userInfo["sub"]),
+		"session_id":    session.ID,
+		"cookie_secure": session.Options.Secure,
+		"cookie_domain": session.Options.Domain,
 	}).Debug("User session created successfully")
 
 	return nil
@@ -491,7 +491,7 @@ func (h *Auth0Handler) createUserSession(session *sessions.Session, userInfo map
 // completeAuthentication finalizes the authentication process
 func (h *Auth0Handler) completeAuthentication(w http.ResponseWriter, r *http.Request, userInfo map[string]interface{}) {
 	userSub := h.safeStringValue(userInfo["sub"])
-	
+
 	// Record successful login
 	h.metrics.RecordLoginSuccess()
 	h.auditLogger.LogAuthEvent("login_success", userSub, map[string]interface{}{
@@ -500,7 +500,7 @@ func (h *Auth0Handler) completeAuthentication(w http.ResponseWriter, r *http.Req
 	})
 
 	logrus.WithFields(logrus.Fields{
-		"user_sub":   userSub,
+		"user_sub":    userSub,
 		"redirect_to": "/ui/",
 	}).Info("Authentication successful, redirecting to UI")
 
@@ -552,9 +552,9 @@ func (h *Auth0Handler) convertToCommaSeparated(value interface{}) string {
 
 // shouldUseSecureCookies determines if secure cookies should be used
 func (h *Auth0Handler) shouldUseSecureCookies(r *http.Request) bool {
-	return os.Getenv("TLS_ENABLED") == "true" || 
-		   os.Getenv("BEHIND_PROXY") == "true" ||
-		   r.Header.Get("X-Forwarded-Proto") == "https"
+	return os.Getenv("TLS_ENABLED") == "true" ||
+		os.Getenv("BEHIND_PROXY") == "true" ||
+		r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 func (h *Auth0Handler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -607,7 +607,7 @@ func getRedirectURI(r *http.Request, configURI string) string {
 	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
 		host = forwardedHost
 	}
-	
+
 	// If configURI is set, check if it's a relative path and convert to full URL
 	if configURI != "" {
 		if strings.HasPrefix(configURI, "/") {
@@ -617,7 +617,7 @@ func getRedirectURI(r *http.Request, configURI string) string {
 		// Already a full URL
 		return configURI
 	}
-	
+
 	// Default callback path
 	return fmt.Sprintf("%s://%s/auth/callback", scheme, host)
 }
@@ -649,12 +649,12 @@ func (h *Auth0Handler) UserInfoHandler(w http.ResponseWriter, r *http.Request) {
 	if rolesStr, ok := session.Values["user_roles"].(string); ok && rolesStr != "" {
 		roles = strings.Split(rolesStr, ",")
 	}
-	
+
 	var groups []string
 	if groupsStr, ok := session.Values["user_groups"].(string); ok && groupsStr != "" {
 		groups = strings.Split(groupsStr, ",")
 	}
-	
+
 	userInfo := map[string]interface{}{
 		"sub":    session.Values["user_sub"],
 		"email":  session.Values["user_email"],
@@ -669,9 +669,9 @@ func (h *Auth0Handler) UserInfoHandler(w http.ResponseWriter, r *http.Request) {
 
 func (h *Auth0Handler) AuthStatusHandler(w http.ResponseWriter, r *http.Request) {
 	session, err := h.store.Get(r, sessionName)
-	
+
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	if err != nil || session.Values["authenticated"] != true {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -680,36 +680,36 @@ func (h *Auth0Handler) AuthStatusHandler(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-	
+
 	// Return authenticated status with user info
 	var roles []string
 	if rolesStr, ok := session.Values["user_roles"].(string); ok && rolesStr != "" {
 		roles = strings.Split(rolesStr, ",")
 	}
-	
+
 	var groups []string
 	if groupsStr, ok := session.Values["user_groups"].(string); ok && groupsStr != "" {
 		groups = strings.Split(groupsStr, ",")
 	}
-	
+
 	userInfo := map[string]interface{}{
 		"authenticated": true,
 		"user": map[string]interface{}{
 			"sub":    session.Values["user_sub"],
-			"email":  session.Values["user_email"], 
+			"email":  session.Values["user_email"],
 			"name":   session.Values["user_name"],
 			"roles":  roles,
 			"groups": groups,
 		},
 	}
-	
+
 	json.NewEncoder(w).Encode(userInfo)
 }
 
 func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 	// Check authentication with enhanced security validation
 	session, err := h.store.Get(r, sessionName)
-	
+
 	// Debug cookie headers
 	cookies := r.Header.Get("Cookie")
 	cookieNames := []string{}
@@ -717,18 +717,18 @@ func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 		cookieNames = append(cookieNames, c.Name)
 	}
 	logrus.WithFields(logrus.Fields{
-		"cookies_present": cookies != "",
-		"cookie_count": len(r.Cookies()),
-		"cookie_names": cookieNames,
-		"session_error": err,
-		"session_id": session.ID,
-		"session_is_new": session.IsNew,
-		"session_name": session.Name(),
-		"host": r.Host,
-		"path": r.URL.Path,
+		"cookies_present":   cookies != "",
+		"cookie_count":      len(r.Cookies()),
+		"cookie_names":      cookieNames,
+		"session_error":     err,
+		"session_id":        session.ID,
+		"session_is_new":    session.IsNew,
+		"session_name":      session.Name(),
+		"host":              r.Host,
+		"path":              r.URL.Path,
 		"x_forwarded_proto": r.Header.Get("X-Forwarded-Proto"),
 	}).Info("Session retrieval debug")
-	
+
 	// Handle securecookie errors by clearing the corrupted session
 	if err != nil && strings.Contains(err.Error(), "securecookie") {
 		logrus.WithError(err).Warn("Corrupted session detected, clearing and redirecting to login")
@@ -738,34 +738,34 @@ func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api/auth/login", http.StatusTemporaryRedirect)
 		return
 	}
-	
+
 	// Simple authentication check
 	logrus.WithFields(logrus.Fields{
-		"path": r.URL.Path,
+		"path":          r.URL.Path,
 		"session_error": err,
 		"authenticated": session.Values["authenticated"],
-		"session_new": session.IsNew,
-		"user_sub": session.Values["user_sub"],
-		"user_agent": r.Header.Get("User-Agent"),
-		"referer": r.Header.Get("Referer"),
+		"session_new":   session.IsNew,
+		"user_sub":      session.Values["user_sub"],
+		"user_agent":    r.Header.Get("User-Agent"),
+		"referer":       r.Header.Get("Referer"),
 	}).Info("SecureUIHandler checking session")
-	
+
 	// Check if we're in a redirect loop
 	referer := r.Header.Get("Referer")
 	if strings.Contains(referer, "/api/auth/callback") || strings.Contains(referer, "/ui/") {
 		logrus.WithField("referer", referer).Debug("Detected potential redirect loop, ensuring proper session")
 	}
-	
+
 	if err != nil || session.Values["authenticated"] != true {
 		logrus.WithFields(logrus.Fields{
-			"session_error": err,
-			"authenticated": session.Values["authenticated"],
+			"session_error":    err,
+			"authenticated":    session.Values["authenticated"],
 			"will_redirect_to": "/api/auth/login",
 		}).Warn("Session check failed, redirecting to login")
 		http.Redirect(w, r, "/api/auth/login", http.StatusTemporaryRedirect)
 		return
 	}
-	
+
 	logrus.Info("Session valid, serving UI")
 
 	// Prepare user info for injection
@@ -773,12 +773,12 @@ func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 	if rolesStr, ok := session.Values["user_roles"].(string); ok && rolesStr != "" {
 		roles = strings.Split(rolesStr, ",")
 	}
-	
+
 	var groups []string
 	if groupsStr, ok := session.Values["user_groups"].(string); ok && groupsStr != "" {
 		groups = strings.Split(groupsStr, ",")
 	}
-	
+
 	userInfo := map[string]interface{}{
 		"sub":    session.Values["user_sub"],
 		"email":  session.Values["user_email"],
@@ -798,7 +798,7 @@ func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Convert user info to JSON and inject it safely
 	userJSON, _ := json.Marshal(userInfo)
-	
+
 	// Add safeguards to prevent auth loops
 	safetyScript := fmt.Sprintf(`<script>
 		console.log('Injecting AUTH_USER with safeguards:', %s);
@@ -807,17 +807,17 @@ func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 		window.PREVENT_AUTH_REDIRECT = true;
 		console.log('Auth safeguards enabled - no automatic redirects');
 	</script>`, userJSON, userJSON)
-	
+
 	// Insert the safety script before closing head tag
 	html := string(content)
 	html = strings.Replace(html, "</head>", safetyScript+"</head>", 1)
-	
+
 	logrus.WithFields(logrus.Fields{
 		"user_info": userInfo,
 	}).Info("Serving index.html with auth safeguards")
-	
+
 	w.Header().Set("Content-Type", "text/html")
-	w.Header().Set("X-Frame-Options", "SAMEORIGIN") 
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Write([]byte(html))
 }
@@ -825,7 +825,7 @@ func (h *Auth0Handler) SecureUIHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Auth0Handler) ProfileHandler(w http.ResponseWriter, r *http.Request) {
 	// Check authentication
 	session, err := h.store.Get(r, sessionName)
-	
+
 	// Handle securecookie errors by clearing the corrupted session
 	if err != nil && strings.Contains(err.Error(), "securecookie") {
 		logrus.WithError(err).Warn("Corrupted session detected, clearing and redirecting to login")
@@ -834,7 +834,7 @@ func (h *Auth0Handler) ProfileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api/auth/login", http.StatusTemporaryRedirect)
 		return
 	}
-	
+
 	if err != nil || session.Values["authenticated"] != true {
 		http.Redirect(w, r, "/api/auth/login", http.StatusTemporaryRedirect)
 		return
@@ -845,12 +845,12 @@ func (h *Auth0Handler) ProfileHandler(w http.ResponseWriter, r *http.Request) {
 	if rolesStr, ok := session.Values["user_roles"].(string); ok && rolesStr != "" {
 		roles = strings.Split(rolesStr, ",")
 	}
-	
+
 	var groups []string
 	if groupsStr, ok := session.Values["user_groups"].(string); ok && groupsStr != "" {
 		groups = strings.Split(groupsStr, ",")
 	}
-	
+
 	userInfo := map[string]interface{}{
 		"sub":    session.Values["user_sub"],
 		"email":  session.Values["user_email"],
@@ -1371,22 +1371,22 @@ curl -H "Authorization: Bearer YOUR_ACCESS_KEY:YOUR_SECRET_KEY" \\<br/>
         }
     </script>
 </body>
-</html>`, userJSON, 
-	func() string {
-		if name, ok := userInfo["name"].(string); ok && name != "" {
-			parts := strings.Fields(name)
-			if len(parts) >= 2 {
-				return strings.ToUpper(string(parts[0][0]) + string(parts[len(parts)-1][0]))
+</html>`, userJSON,
+		func() string {
+			if name, ok := userInfo["name"].(string); ok && name != "" {
+				parts := strings.Fields(name)
+				if len(parts) >= 2 {
+					return strings.ToUpper(string(parts[0][0]) + string(parts[len(parts)-1][0]))
+				}
+				return strings.ToUpper(name[:2])
 			}
-			return strings.ToUpper(name[:2])
-		}
-		return "U"
-	}(),
-	userInfo["name"], userInfo["email"], truncateUserID(fmt.Sprintf("%v", userInfo["sub"])),
-	getPublicEndpoint(r), getPublicEndpoint(r), getPublicEndpoint(r), getPublicEndpoint(r))
+			return "U"
+		}(),
+		userInfo["name"], userInfo["email"], truncateUserID(fmt.Sprintf("%v", userInfo["sub"])),
+		getPublicEndpoint(r), getPublicEndpoint(r), getPublicEndpoint(r), getPublicEndpoint(r))
 
 	w.Header().Set("Content-Type", "text/html")
-	w.Header().Set("X-Frame-Options", "SAMEORIGIN") 
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Write([]byte(profileHTML))
 }
@@ -1427,13 +1427,13 @@ type TokenResponse struct {
 
 func (h *Auth0Handler) exchangeCode(r *http.Request, code string) (*TokenResponse, error) {
 	redirectURI := getRedirectURI(r, h.config.RedirectURI)
-	
+
 	logrus.WithFields(logrus.Fields{
 		"redirect_uri": redirectURI,
 		"client_id":    h.config.ClientID,
 		"domain":       h.config.Domain,
 	}).Debug("Exchanging authorization code for tokens")
-	
+
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {h.config.ClientID},
@@ -1497,15 +1497,15 @@ func (h *Auth0Handler) getUserInfo(accessToken string) (map[string]interface{}, 
 
 func (h *Auth0Handler) getUserInfoWithRetry(accessToken string, maxRetries int) (map[string]interface{}, error) {
 	var lastErr error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		userInfo, err := h.getUserInfo(accessToken)
 		if err == nil {
 			return userInfo, nil
 		}
-		
+
 		lastErr = err
-		
+
 		// If it's a rate limit error, wait before retrying
 		if strings.Contains(err.Error(), "429") {
 			waitTime := time.Duration(i+1) * 2 * time.Second // Exponential backoff
@@ -1516,11 +1516,11 @@ func (h *Auth0Handler) getUserInfoWithRetry(accessToken string, maxRetries int) 
 			time.Sleep(waitTime)
 			continue
 		}
-		
+
 		// For other errors, don't retry
 		break
 	}
-	
+
 	return nil, lastErr
 }
 
@@ -1530,30 +1530,30 @@ func (h *Auth0Handler) parseIDToken(idToken string) (map[string]interface{}, err
 		logrus.WithError(err).Warn("JWT signature verification failed")
 		return nil, fmt.Errorf("invalid JWT signature: %w", err)
 	}
-	
+
 	// Split the JWT into parts
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
-	
+
 	// Decode the payload (second part)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
-	
+
 	// Parse JSON claims
 	var claims map[string]interface{}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
-	
+
 	// Additional security validation
 	if err := h.validateJWTClaims(claims); err != nil {
 		return nil, fmt.Errorf("JWT claims validation failed: %w", err)
 	}
-	
+
 	return claims, nil
 }
 
@@ -1563,79 +1563,54 @@ func (h *Auth0Handler) parseAccessToken(accessToken string) (map[string]interfac
 		logrus.WithError(err).Warn("Access token signature verification failed")
 		return nil, fmt.Errorf("invalid access token signature: %w", err)
 	}
-	
+
 	// Split the JWT into parts
 	parts := strings.Split(accessToken, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format")
 	}
-	
+
 	// Decode the payload (second part)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
-	
+
 	// Parse JSON claims
 	var claims map[string]interface{}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
-	
+
 	// Additional security validation for access tokens
 	if err := h.validateJWTClaims(claims); err != nil {
 		return nil, fmt.Errorf("Access token claims validation failed: %w", err)
 	}
-	
+
 	return claims, nil
 }
 
-// verifyJWTSignature performs cryptographic verification of JWT tokens against Auth0 JWKS
+// verifyJWTSignature performs cryptographic verification of JWT tokens against Auth0 JWKS.
 func (h *Auth0Handler) verifyJWTSignature(token string) error {
-	// Split JWT into parts
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid JWT format")
+	if h.config == nil || !h.config.JWTValidation {
+		return nil
 	}
-	
-	// Decode header to get signing algorithm and key ID
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+
+	parsed, err := jwt.ParseSigned(token)
 	if err != nil {
-		return fmt.Errorf("failed to decode JWT header: %w", err)
+		return fmt.Errorf("failed to parse JWT: %w", err)
 	}
-	
-	var header struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
-		Typ string `json:"typ"`
+
+	jwks, err := h.getJWKS()
+	if err != nil {
+		return fmt.Errorf("failed to get JWKS: %w", err)
 	}
-	
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return fmt.Errorf("failed to parse JWT header: %w", err)
+
+	var rawClaims map[string]interface{}
+	if err := parsed.Claims(jwks, &rawClaims); err != nil {
+		return fmt.Errorf("JWT signature verification failed: %w", err)
 	}
-	
-	// Only allow RS256 algorithm for security
-	if header.Alg != "RS256" {
-		return fmt.Errorf("unsupported JWT algorithm: %s (only RS256 allowed)", header.Alg)
-	}
-	
-	if header.Typ != "JWT" {
-		return fmt.Errorf("invalid token type: %s", header.Typ)
-	}
-	
-	// For now, validate basic structure and warn about signature verification
-	// In production, implement proper JWKS fetching and RSA signature verification
-	logrus.WithFields(logrus.Fields{
-		"alg": header.Alg,
-		"kid": header.Kid,
-		"typ": header.Typ,
-	}).Info("JWT signature validation (JWKS verification not yet implemented)")
-	
-	// TODO: Implement full JWKS-based verification:
-	// 1. Fetch JWKS from Auth0 /.well-known/jwks.json
-	// 2. Find matching public key by kid
-	// 3. Verify RSA signature on parts[0] + "." + parts[1]
-	
+
 	return nil
 }
 
@@ -1650,7 +1625,7 @@ func (h *Auth0Handler) validateJWTClaims(claims map[string]interface{}) error {
 	} else {
 		return fmt.Errorf("missing or invalid issuer claim")
 	}
-	
+
 	// Validate audience
 	if aud, ok := claims["aud"]; ok {
 		var validAudience bool
@@ -1671,7 +1646,7 @@ func (h *Auth0Handler) validateJWTClaims(claims map[string]interface{}) error {
 	} else {
 		return fmt.Errorf("missing audience claim")
 	}
-	
+
 	// Validate expiration
 	if exp, ok := claims["exp"].(float64); ok {
 		if time.Now().Unix() > int64(exp) {
@@ -1680,14 +1655,14 @@ func (h *Auth0Handler) validateJWTClaims(claims map[string]interface{}) error {
 	} else {
 		return fmt.Errorf("missing or invalid expiration claim")
 	}
-	
+
 	// Validate not before (if present)
 	if nbf, ok := claims["nbf"].(float64); ok {
 		if time.Now().Unix() < int64(nbf) {
 			return fmt.Errorf("token not yet valid")
 		}
 	}
-	
+
 	// Validate issued at time (prevent tokens from future)
 	if iat, ok := claims["iat"].(float64); ok {
 		// Allow 5 minute clock skew
@@ -1696,7 +1671,7 @@ func (h *Auth0Handler) validateJWTClaims(claims map[string]interface{}) error {
 			return fmt.Errorf("token issued in the future")
 		}
 	}
-	
+
 	return nil
 }
 
@@ -1722,7 +1697,6 @@ func (h *Auth0Handler) validateSession(session *sessions.Session, r *http.Reques
 	// Simple validation - just check if authenticated
 	return session.Values["authenticated"] == true
 }
-
 
 // ValidateJWT validates a JWT token and returns user claims
 func (h *Auth0Handler) ValidateJWT(tokenString string) (*UserClaims, error) {
@@ -1853,7 +1827,7 @@ func (h *Auth0Handler) RequireUIAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Check session-based auth for UI access
 		session, err := h.store.Get(r, sessionName)
-		
+
 		logrus.WithFields(logrus.Fields{
 			"path":          r.URL.Path,
 			"session_error": err,
@@ -1862,7 +1836,7 @@ func (h *Auth0Handler) RequireUIAuth(next http.HandlerFunc) http.HandlerFunc {
 			"has_user_sub":  session.Values["user_sub"] != nil,
 			"user_sub":      session.Values["user_sub"],
 		}).Debug("Checking UI authentication")
-		
+
 		if err != nil || !h.validateSession(session, r) {
 			// Redirect to login for UI access
 			loginURL := "/api/auth/login"
@@ -1914,7 +1888,8 @@ func (h *Auth0Handler) getJWKS() (*jose.JSONWebKeySet, error) {
 
 	// Fetch JWKS
 	jwksURL := fmt.Sprintf("https://%s/.well-known/jwks.json", h.config.Domain)
-	resp, err := http.Get(jwksURL)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
 	}
@@ -1931,7 +1906,7 @@ func (h *Auth0Handler) getJWKS() (*jose.JSONWebKeySet, error) {
 
 	// Cache for 1 hour
 	h.jwksCache.jwks = &jwks
-	h.jwksCache.expires = time.Now().Add(time.Hour)
+	h.jwksCache.expires = time.Now().Add(jwksCacheTTL)
 
 	// Record API call latency
 	h.metrics.RecordAuth0APICall(time.Since(start))
@@ -1992,7 +1967,7 @@ func truncateUserID(userID string) string {
 	if userID == "" {
 		return "Unknown"
 	}
-	
+
 	// For Auth0 IDs like "google-oauth2|108656223015682269080", show just the last part
 	if strings.Contains(userID, "|") {
 		parts := strings.Split(userID, "|")
@@ -2006,12 +1981,12 @@ func truncateUserID(userID string) string {
 			return fmt.Sprintf("%s|%s", provider, id)
 		}
 	}
-	
+
 	// For other long IDs, just truncate
 	if len(userID) > 20 {
 		return fmt.Sprintf("%s...%s", userID[:8], userID[len(userID)-8:])
 	}
-	
+
 	return userID
 }
 
@@ -2020,7 +1995,7 @@ func getPublicEndpoint(r *http.Request) string {
 	if endpoint := os.Getenv("PUBLIC_ENDPOINT"); endpoint != "" {
 		return endpoint
 	}
-	
+
 	// Derive from request headers
 	if r != nil {
 		scheme := "https"
@@ -2029,15 +2004,15 @@ func getPublicEndpoint(r *http.Request) string {
 		} else if r.TLS == nil {
 			scheme = "http"
 		}
-		
+
 		host := r.Host
 		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
 			host = forwardedHost
 		}
-		
+
 		return fmt.Sprintf("%s://%s", scheme, host)
 	}
-	
+
 	// Default fallback
 	return "https://your-storage-engine.com"
 }
@@ -2058,24 +2033,24 @@ func (h *Auth0Handler) GenerateAPIKey(userID string, req APIKeyRequest) (*APIKey
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access key: %w", err)
 	}
-	
+
 	secretKey, err := generateRandomString(32) // 64 character hex string
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate secret key: %w", err)
 	}
-	
+
 	// Create unique ID
 	keyID, err := generateRandomString(8) // 16 character hex string
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key ID: %w", err)
 	}
-	
+
 	// Set default permissions if none provided
 	permissions := req.Permissions
 	if len(permissions) == 0 {
 		permissions = []string{"read:buckets", "write:buckets"}
 	}
-	
+
 	apiKey := &APIKey{
 		ID:          keyID,
 		Name:        req.Name,
@@ -2086,19 +2061,19 @@ func (h *Auth0Handler) GenerateAPIKey(userID string, req APIKeyRequest) (*APIKey
 		ExpiresAt:   req.ExpiresAt,
 		Permissions: permissions,
 	}
-	
+
 	// Store in memory
 	h.apiKeyStore.mu.Lock()
 	h.apiKeyStore.keys[apiKey.AccessKey] = apiKey
 	h.apiKeyStore.mu.Unlock()
-	
+
 	logrus.WithFields(logrus.Fields{
 		"user_id":    userID,
 		"key_id":     keyID,
 		"access_key": apiKey.AccessKey,
 		"name":       req.Name,
 	}).Info("Generated new API key")
-	
+
 	return apiKey, nil
 }
 
@@ -2106,7 +2081,7 @@ func (h *Auth0Handler) GenerateAPIKey(userID string, req APIKeyRequest) (*APIKey
 func (h *Auth0Handler) ListAPIKeys(userID string) []*APIKey {
 	h.apiKeyStore.mu.RLock()
 	defer h.apiKeyStore.mu.RUnlock()
-	
+
 	var userKeys []*APIKey
 	for _, key := range h.apiKeyStore.keys {
 		if key.UserID == userID {
@@ -2116,7 +2091,7 @@ func (h *Auth0Handler) ListAPIKeys(userID string) []*APIKey {
 			userKeys = append(userKeys, &keyClone)
 		}
 	}
-	
+
 	return userKeys
 }
 
@@ -2124,7 +2099,7 @@ func (h *Auth0Handler) ListAPIKeys(userID string) []*APIKey {
 func (h *Auth0Handler) RevokeAPIKey(userID, keyID string) error {
 	h.apiKeyStore.mu.Lock()
 	defer h.apiKeyStore.mu.Unlock()
-	
+
 	// Find and remove the key
 	for accessKey, key := range h.apiKeyStore.keys {
 		if key.ID == keyID && key.UserID == userID {
@@ -2136,7 +2111,7 @@ func (h *Auth0Handler) RevokeAPIKey(userID, keyID string) error {
 			return nil
 		}
 	}
-	
+
 	return fmt.Errorf("API key not found or not owned by user")
 }
 
@@ -2144,25 +2119,25 @@ func (h *Auth0Handler) RevokeAPIKey(userID, keyID string) error {
 func (h *Auth0Handler) ValidateAPIKey(accessKey, secretKey string) (*APIKey, error) {
 	h.apiKeyStore.mu.RLock()
 	defer h.apiKeyStore.mu.RUnlock()
-	
+
 	key, exists := h.apiKeyStore.keys[accessKey]
 	if !exists {
 		return nil, fmt.Errorf("invalid access key")
 	}
-	
+
 	if key.SecretKey != secretKey {
 		return nil, fmt.Errorf("invalid secret key")
 	}
-	
+
 	// Check expiration
 	if key.ExpiresAt != nil && time.Now().After(*key.ExpiresAt) {
 		return nil, fmt.Errorf("API key has expired")
 	}
-	
+
 	// Update last used time
 	now := time.Now()
 	key.LastUsed = &now
-	
+
 	return key, nil
 }
 
@@ -2175,26 +2150,26 @@ func (h *Auth0Handler) CreateAPIKeyHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	
+
 	userID, ok := session.Values["user_sub"].(string)
 	if !ok {
 		http.Error(w, "User ID not found in session", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Parse request
 	var req APIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Validate request
 	if req.Name == "" {
 		http.Error(w, "Key name is required", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Generate the key
 	apiKey, err := h.GenerateAPIKey(userID, req)
 	if err != nil {
@@ -2202,7 +2177,7 @@ func (h *Auth0Handler) CreateAPIKeyHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Failed to generate API key", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(apiKey)
 }
@@ -2214,15 +2189,15 @@ func (h *Auth0Handler) ListAPIKeysHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	
+
 	userID, ok := session.Values["user_sub"].(string)
 	if !ok {
 		http.Error(w, "User ID not found in session", http.StatusBadRequest)
 		return
 	}
-	
+
 	keys := h.ListAPIKeys(userID)
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"keys": keys,
@@ -2236,13 +2211,13 @@ func (h *Auth0Handler) RevokeAPIKeyHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	
+
 	userID, ok := session.Values["user_sub"].(string)
 	if !ok {
 		http.Error(w, "User ID not found in session", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Get key ID from URL path or request body
 	var req struct {
 		KeyID string `json:"key_id"`
@@ -2251,12 +2226,12 @@ func (h *Auth0Handler) RevokeAPIKeyHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := h.RevokeAPIKey(userID, req.KeyID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "API key revoked successfully",

@@ -941,12 +941,38 @@ type ScanContentResult struct {
 	Result interface{}
 }
 
-// scanContent scans content for viruses using VirusTotal
+// scanContent optionally scans buffered uploads via VirusTotal when a scanner is configured.
 func (h *Handler) scanContent(ctx context.Context, body io.Reader, key string, size int64, logger *logrus.Entry, w http.ResponseWriter) (*ScanContentResult, error) {
-	// For now, just return clean result
-	// TODO: Implement actual VirusTotal scanning
+	_ = w // reserved for future streaming responses
+
+	if h.scanner == nil || !h.scanner.IsEnabled() {
+		return &ScanContentResult{
+			Body:   body,
+			Result: nil,
+		}, nil
+	}
+
+	if !h.scanner.CanBufferScanForUpload(size) {
+		logger.WithFields(logrus.Fields{"key": key, "size": size}).Debug("Skipping VirusTotal scan (size limits or policy)")
+		return &ScanContentResult{Body: body, Result: nil}, nil
+	}
+
+	buf, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("read body for malware scan: %w", err)
+	}
+
+	result, err := h.scanner.ScanReader(ctx, bytes.NewReader(buf), key, int64(len(buf)))
+	if err != nil {
+		return nil, fmt.Errorf("virus scan: %w", err)
+	}
+
+	if h.scanner.ShouldBlockUpload(result) {
+		return nil, fmt.Errorf("upload rejected: malware scan flagged threats for key %q", key)
+	}
+
 	return &ScanContentResult{
-		Body:   body,
-		Result: nil, // No scan result available without real scanner
+		Body:   bytes.NewReader(buf),
+		Result: result,
 	}, nil
 }
