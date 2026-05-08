@@ -766,6 +766,8 @@ This project is licensed under the [Business Source License 1.1](https://mariadb
 and Change License). After the Change Date, each version becomes available under the Change
 License stated there (Apache License, Version 2.0).
 
+Contribution licensing is summarized in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## 🙏 Acknowledgments
 
 - Inspired by the original [s3proxy](https://github.com/gaul/s3proxy) Java implementation
