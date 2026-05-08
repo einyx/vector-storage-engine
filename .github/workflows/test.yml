@@ -18,6 +18,16 @@ jobs:
       # Run unit tests
       - name: Run unit tests
         run: go test ./... -v -race -coverprofile=coverage.out
+
+      # pkg/vector is behind `vector`; keep SIMD paths (amd64 AVX+FMA, arm64 NEON) exercised in CI
+      - name: Run vector package tests (vector build tag)
+        run: go test -tags vector ./pkg/vector/... -v -race -count=1
+
+      - name: Cross-compile vector tests for linux/arm64 (noexec)
+        env:
+          GOOS: linux
+          GOARCH: arm64
+        run: go test -tags vector -c -o "${RUNNER_TEMP}/vector-linux-arm64.test" ./pkg/vector/...
       
       # Upload coverage
       - name: Upload coverage to Codecov

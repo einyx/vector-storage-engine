@@ -6,8 +6,12 @@ Thanks for helping improve Warp Storage Engine.
 
 1. Open an issue or discussion before large changes so maintainers can align on direction.
 2. Fork and branch from `main`, keep commits focused and messages descriptive.
-3. Run tests locally (`make test` or `go test ./...`; use `-tags vector` where your change touches `pkg/vector`).
+3. Run tests locally (`make test` or `go test ./...`; for `pkg/vector` run `make test-vector` or `go test -tags vector ./pkg/vector/...`).
 4. Open a pull request and describe behavior changes and risk.
+
+## Releases
+
+User-facing release notes belong on **GitHub Releases**. A root `CHANGELOG.md` may be produced locally by release tooling for packaging (for example GoReleaser) and can be gitignored; do not rely on it as the canonical history unless the maintainers change that policy.
 
 ## License
 

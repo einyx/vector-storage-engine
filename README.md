@@ -625,6 +625,18 @@ go test -v -run TestS3Handler ./pkg/s3/...
 go test -race ./...
 ```
 
+### Vector engine (`vector` build tag)
+
+`pkg/vector` is optional and only builds with `-tags vector`. Run:
+
+```bash
+make test-vector
+# or
+go test -tags vector ./pkg/vector/...
+```
+
+**SIMD distance kernels:** On **linux/darwin amd64**, fast paths use **AVX + FMA** when available (`golang.org/x/sys/cpu`); otherwise scalar Go is used. On **arm64**, kernels use **NEON**. Other `GOARCH` values use the portable scalar implementation.
+
 ### Building
 
 ```bash
