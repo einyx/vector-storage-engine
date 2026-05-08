@@ -1887,7 +1887,14 @@ func (h *Auth0Handler) getJWKS() (*jose.JSONWebKeySet, error) {
 	}
 
 	// Fetch JWKS
-	jwksURL := fmt.Sprintf("https://%s/.well-known/jwks.json", h.config.Domain)
+	jwksURL := strings.TrimSpace(h.config.JWKSURL)
+	if jwksURL == "" {
+		if h.config.Domain == "" {
+			return nil, fmt.Errorf("auth0 domain or jwks_url is required to fetch JWKS")
+		}
+		jwksURL = fmt.Sprintf("https://%s/.well-known/jwks.json", h.config.Domain)
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(jwksURL)
 	if err != nil {

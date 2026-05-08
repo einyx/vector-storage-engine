@@ -9,6 +9,14 @@ Thanks for helping improve Warp Storage Engine.
 3. Run tests locally (`make test` or `go test ./...`; for `pkg/vector` run `make test-vector` or `go test -tags vector ./pkg/vector/...`).
 4. Open a pull request and describe behavior changes and risk.
 
+## Auth0 / JWKS
+
+Optional **`AUTH0_JWKS_URL`** (`auth0.jwks_url`) overrides the default `https://{AUTH0_DOMAIN}/.well-known/jwks.json` JWKS fetch URL (custom IdP or local integration testing).
+
+## Upload malware scanning
+
+When VirusTotal is enabled and an upload fits configured scan limits, **PUT** object uploads are scanned before reaching storage. Scanner integration errors surface as **502 Bad Gateway**; detections that trigger block policy return **400 Bad Request**.
+
 ## Releases
 
 User-facing release notes belong on **GitHub Releases**. A root `CHANGELOG.md` may be produced locally by release tooling for packaging (for example GoReleaser) and can be gitignored; do not rely on it as the canonical history unless the maintainers change that policy.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5" //nolint:gosec // MD5 is required for S3 compatibility
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,9 @@ import (
 
 	"github.com/prysmsh/warp-storage-engine/internal/storage"
 )
+
+// ErrMalwareUploadBlocked is returned when an upload fails configured malware policy.
+var ErrMalwareUploadBlocked = errors.New("upload rejected by malware scan")
 
 // handleObject handles object-level operations (GET, PUT, DELETE, HEAD, POST)
 func (h *Handler) handleObject(w http.ResponseWriter, r *http.Request) {
@@ -689,6 +693,21 @@ func (h *Handler) putObject(w http.ResponseWriter, r *http.Request, bucket, key 
 		"bodyType": fmt.Sprintf("%T", body),
 	}).Info("Processing upload request")
 
+	// Optional malware scan for uploads we can buffer within scanner policy limits.
+	if ms := h.scanner; ms != nil && ms.IsEnabled() && size >= 0 && ms.CanBufferScanForUpload(size) {
+		scanned, err := h.scanContent(ctx, body, key, size, logger, w)
+		if err != nil {
+			if errors.Is(err, ErrMalwareUploadBlocked) {
+				h.sendError(w, err, http.StatusBadRequest)
+				return
+			}
+			logger.WithError(err).Error("Malware scan failed")
+			h.sendError(w, fmt.Errorf("malware scan failed"), http.StatusBadGateway)
+			return
+		}
+		body = scanned.Body
+	}
+
 	// Store object
 	err := h.storage.PutObject(ctx, bucket, key, body, size, metadata)
 	if err != nil {
@@ -968,7 +987,7 @@ func (h *Handler) scanContent(ctx context.Context, body io.Reader, key string, s
 	}
 
 	if h.scanner.ShouldBlockUpload(result) {
-		return nil, fmt.Errorf("upload rejected: malware scan flagged threats for key %q", key)
+		return nil, fmt.Errorf("%w: malware scan flagged threats for key %q", ErrMalwareUploadBlocked, key)
 	}
 
 	return &ScanContentResult{
