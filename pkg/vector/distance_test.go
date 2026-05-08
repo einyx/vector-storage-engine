@@ -4,8 +4,66 @@ package vector
 
 import (
 	"math"
+	mrand "math/rand"
 	"testing"
 )
+
+func oracleCosine(a, b []float32) float32 {
+	var dot, na, nb float64
+	for i := range a {
+		ai, bi := float64(a[i]), float64(b[i])
+		dot += ai * bi
+		na += ai * ai
+		nb += bi * bi
+	}
+	denom := math.Sqrt(na) * math.Sqrt(nb)
+	if denom == 0 {
+		return 1
+	}
+	return float32(1 - dot/denom)
+}
+
+func oracleL2(a, b []float32) float32 {
+	var s float64
+	for i := range a {
+		d := float64(a[i]) - float64(b[i])
+		s += d * d
+	}
+	return float32(s)
+}
+
+func oracleIP(a, b []float32) float32 {
+	var s float64
+	for i := range a {
+		s += float64(a[i]) * float64(b[i])
+	}
+	return float32(-s)
+}
+
+func TestDistance_FuzzAgainstOracle(t *testing.T) {
+	rng := mrand.New(mrand.NewSource(1))
+	dims := []int{1, 3, 4, 7, 8, 15, 16, 17, 64, 128, 384, 768, 1024}
+	for _, dim := range dims {
+		a := make([]float32, dim)
+		b := make([]float32, dim)
+		for i := range a {
+			a[i] = rng.Float32()*2 - 1
+			b[i] = rng.Float32()*2 - 1
+		}
+		// L2 identity has bounded relative error; pick a tolerance scaled
+		// to the magnitudes involved.
+		tolL2 := float32(math.Max(1e-4, float64(oracleL2(a, b))*1e-4))
+		if got, want := L2Distance(a, b), oracleL2(a, b); math.Abs(float64(got-want)) > float64(tolL2) {
+			t.Errorf("dim=%d L2: got %v want %v (tol %v)", dim, got, want, tolL2)
+		}
+		if got, want := CosineDistance(a, b), oracleCosine(a, b); math.Abs(float64(got-want)) > 1e-5 {
+			t.Errorf("dim=%d Cosine: got %v want %v", dim, got, want)
+		}
+		if got, want := InnerProductDistance(a, b), oracleIP(a, b); math.Abs(float64(got-want)) > 1e-4 {
+			t.Errorf("dim=%d IP: got %v want %v", dim, got, want)
+		}
+	}
+}
 
 func TestCosineDistance_IdenticalVectors(t *testing.T) {
 	a := []float32{1, 2, 3}

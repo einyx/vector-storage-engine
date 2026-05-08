@@ -2,41 +2,11 @@
 
 package vector
 
-import (
-	"fmt"
-	"math"
-)
+import "fmt"
 
-func CosineDistance(a, b []float32) float32 {
-	var dot, normA, normB float32
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-	denom := float32(math.Sqrt(float64(normA)) * math.Sqrt(float64(normB)))
-	if denom == 0 {
-		return 1
-	}
-	return 1 - dot/denom
-}
-
-func L2Distance(a, b []float32) float32 {
-	var sum float32
-	for i := range a {
-		d := a[i] - b[i]
-		sum += d * d
-	}
-	return sum
-}
-
-func InnerProductDistance(a, b []float32) float32 {
-	var dot float32
-	for i := range a {
-		dot += a[i] * b[i]
-	}
-	return -dot
-}
+func CosineDistance(a, b []float32) float32      { return cosineDistance(a, b) }
+func L2Distance(a, b []float32) float32           { return l2Distance(a, b) }
+func InnerProductDistance(a, b []float32) float32 { return innerProductDistance(a, b) }
 
 func DistanceFuncFor(metric DistanceMetric) (DistanceFunc, error) {
 	switch metric {
