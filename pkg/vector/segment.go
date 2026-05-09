@@ -147,7 +147,15 @@ func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bu
 		return nil, err
 	}
 
-	hnsw := NewHNSWIndex(gsMeta.Dimensions, hnswM, hnswEfConstruct, distFunc)
+	var hnsw *HNSWIndex
+	var qpForVectors *quantParams
+	if q == QuantInt8 {
+		qp := computeQuantParams(points, gsMeta.Dimensions)
+		qpForVectors = &qp
+		hnsw = NewHNSWIndexQuantized(gsMeta.Dimensions, hnswM, hnswEfConstruct, distFunc, qp)
+	} else {
+		hnsw = NewHNSWIndex(gsMeta.Dimensions, hnswM, hnswEfConstruct, distFunc)
+	}
 	for _, p := range points {
 		hnsw.Insert(p.ID, p.Vector)
 	}
@@ -191,8 +199,9 @@ func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bu
 	var vecData []byte
 	var vecKey string
 	if q == QuantInt8 {
-		qp := computeQuantParams(points, meta.Dimensions)
-		vecData = encodeQuantizedVectors(points, qp, meta.Dimensions)
+		// Reuse the same per-dim params as the in-memory HNSW so disk and
+		// RAM representations agree exactly.
+		vecData = encodeQuantizedVectors(points, *qpForVectors, meta.Dimensions)
 		vecKey = prefix + "/vectors_q.bin"
 	} else {
 		var vecBuf bytes.Buffer

@@ -296,9 +296,7 @@ func TestEngine_AsyncSealDoesNotBlockReads(t *testing.T) {
 	e.mu.RLock()
 	cs := e.collections["async"]
 	e.mu.RUnlock()
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-	if len(cs.sealed) == 0 {
+	if len(cs.sealedAcrossShards()) == 0 {
 		t.Fatal("expected sealed segment after sync")
 	}
 }
@@ -346,16 +344,13 @@ func TestEngine_Int8QuantizationRoundTripAndRecall(t *testing.T) {
 	e.mu.RLock()
 	cs := e.collections["q"]
 	e.mu.RUnlock()
-	cs.mu.RLock()
-	if len(cs.sealed) == 0 {
-		cs.mu.RUnlock()
+	sealed := cs.sealedAcrossShards()
+	if len(sealed) == 0 {
 		t.Fatal("expected at least one sealed segment")
 	}
-	if cs.sealed[0].Meta.Quantization != QuantInt8 {
-		cs.mu.RUnlock()
-		t.Fatalf("expected QuantInt8 segment, got %q", cs.sealed[0].Meta.Quantization)
+	if sealed[0].Meta.Quantization != QuantInt8 {
+		t.Fatalf("expected QuantInt8 segment, got %q", sealed[0].Meta.Quantization)
 	}
-	cs.mu.RUnlock()
 
 	// Recall sanity: top-1 brute-force should agree with the engine on most
 	// queries despite quantization (int8 with per-dim scale on uniform random
@@ -438,10 +433,7 @@ func TestEngine_CompactionMergesSmallestPair(t *testing.T) {
 	e.mu.RLock()
 	cs := e.collections["cmp"]
 	e.mu.RUnlock()
-	cs.mu.RLock()
-	got := len(cs.sealed)
-	cs.mu.RUnlock()
-	if got != 2 {
+	if got := len(cs.sealedAcrossShards()); got != 2 {
 		t.Fatalf("expected 2 sealed segments after compaction, got %d", got)
 	}
 
@@ -494,9 +486,7 @@ func TestEngine_CompactionDropsTombstones(t *testing.T) {
 	e.mu.RLock()
 	cs := e.collections["tomb"]
 	e.mu.RUnlock()
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-	for _, ss := range cs.sealed {
+	for _, ss := range cs.sealedAcrossShards() {
 		if _, ok := ss.Get(1); ok {
 			t.Fatalf("expected tombstoned point 1 to be physically removed from segment %s", ss.Meta.ID)
 		}
@@ -600,6 +590,149 @@ func TestEngine_SearchDedupsAcrossSegments(t *testing.T) {
 	}
 }
 
+func TestEngine_MultiShardRoutingAndSearch(t *testing.T) {
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:           "warp-vectors",
+		SegmentSizeBytes: 64 * 1024 * 1024,
+		WALFlushCount:    10,
+		HNSWm:            4,
+		HNSWefConstruct:  20,
+		HNSWefSearch:     20,
+		CacheMemoryBytes: 1024 * 1024,
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+
+	const dim = 8
+	const shards = 4
+	if err := e.CreateCollection(ctx, Collection{
+		Name: "ms", Dimensions: dim, Distance: L2, ShardCount: shards,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rng := mrand.New(mrand.NewSource(3))
+	const N = 200
+	pts := make([]Point, N)
+	for i := range pts {
+		pts[i] = Point{ID: uint64(i + 1), Vector: randomVector(dim, rng)}
+	}
+	if err := e.Insert(ctx, "ms", pts); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Each shard should have ~N/shards points (id % shards routing).
+	e.mu.RLock()
+	cs := e.collections["ms"]
+	e.mu.RUnlock()
+	if len(cs.shards) != shards {
+		t.Fatalf("expected %d shards, got %d", shards, len(cs.shards))
+	}
+	total := 0
+	for i, sh := range cs.shards {
+		sh.mu.RLock()
+		n := sh.growing.Count()
+		sh.mu.RUnlock()
+		// Each shard receives floor or ceil of N/shards (50 ± 1 here).
+		if n < N/shards-5 || n > N/shards+5 {
+			t.Fatalf("shard %d unexpected size %d (~%d expected)", i, n, N/shards)
+		}
+		total += n
+	}
+	if total != N {
+		t.Fatalf("expected total %d points across shards, got %d", N, total)
+	}
+
+	// Search must aggregate hits from every shard.
+	resp, err := e.Search(ctx, SearchRequest{Collection: "ms", Vector: randomVector(dim, rng), TopK: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(resp.Points) != 10 {
+		t.Fatalf("expected 10 results, got %d", len(resp.Points))
+	}
+
+	// Get must route by ID and return the right point regardless of shard.
+	for i := uint64(1); i <= N; i++ {
+		got, err := e.Get(ctx, "ms", []PointID{i})
+		if err != nil || len(got) != 1 || got[0].ID != i {
+			t.Fatalf("Get %d: got=%v err=%v", i, got, err)
+		}
+	}
+}
+
+func TestEngine_RecoverTombstones(t *testing.T) {
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:                "warp-vectors",
+		SegmentSizeBytes:      1, // every batch overflows → trigger seals
+		WALFlushCount:         1,
+		HNSWm:                 4,
+		HNSWefConstruct:       20,
+		HNSWefSearch:          10,
+		CacheMemoryBytes:      1024 * 1024,
+		CompactionMaxSegments: 0, // disable so the deleted point stays in its sealed segment
+	}
+	e1, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	ctx := context.Background()
+	if err := e1.CreateCollection(ctx, Collection{Name: "tomb", Dimensions: 3, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 1. Insert + seal point 1.
+	if err := e1.Insert(ctx, "tomb", []Point{{ID: 1, Vector: []float32{1, 0, 0}}}); err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+	if err := e1.SyncSealing("tomb"); err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	// 2. Delete it (tombstone goes into WAL).
+	if err := e1.Delete(ctx, "tomb", []PointID{1}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	// 3. Insert + seal point 2 — this triggers WAL truncation that previously
+	//    swept away the tombstone.
+	if err := e1.Insert(ctx, "tomb", []Point{{ID: 2, Vector: []float32{0, 1, 0}}}); err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+	if err := e1.SyncSealing("tomb"); err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	e1.Close()
+
+	// Restart and confirm point 1 stays deleted.
+	e2, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine 2: %v", err)
+	}
+	t.Cleanup(func() { e2.Close() })
+	if err := e2.LoadCollectionsFromBackend(ctx); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	pts, err := e2.Get(ctx, "tomb", []PointID{1})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(pts) != 0 {
+		t.Fatalf("expected deleted point 1 to stay deleted across restart, got %+v", pts)
+	}
+
+	// Sanity: point 2 still exists.
+	pts2, err := e2.Get(ctx, "tomb", []PointID{2})
+	if err != nil || len(pts2) != 1 {
+		t.Fatalf("expected point 2 alive: pts=%v err=%v", pts2, err)
+	}
+}
+
 func TestEngine_RecoverSealedSegments(t *testing.T) {
 	be := newSegTestBackend()
 	cfg := VectorConfig{
@@ -639,9 +772,7 @@ func TestEngine_RecoverSealedSegments(t *testing.T) {
 	e1.mu.RLock()
 	cs1 := e1.collections["rec"]
 	e1.mu.RUnlock()
-	cs1.mu.RLock()
-	sealedCount := len(cs1.sealed)
-	cs1.mu.RUnlock()
+	sealedCount := len(cs1.sealedAcrossShards())
 	if sealedCount == 0 {
 		t.Fatal("test setup: expected at least one sealed segment in e1")
 	}
@@ -663,10 +794,7 @@ func TestEngine_RecoverSealedSegments(t *testing.T) {
 	if !ok {
 		t.Fatal("collection not recovered")
 	}
-	cs2.mu.RLock()
-	got := len(cs2.sealed)
-	cs2.mu.RUnlock()
-	if got != sealedCount {
+	if got := len(cs2.sealedAcrossShards()); got != sealedCount {
 		t.Fatalf("expected %d sealed segments after recovery, got %d", sealedCount, got)
 	}
 

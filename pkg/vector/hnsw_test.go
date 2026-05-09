@@ -15,6 +15,77 @@ func randomVector(dim int, rng *rand.Rand) []float32 {
 	return v
 }
 
+func TestHNSW_QuantizedNodesAreInt8(t *testing.T) {
+	const dim = 8
+	rng := rand.New(rand.NewSource(1))
+	pts := make([][]float32, 50)
+	for i := range pts {
+		pts[i] = randomVector(dim, rng)
+	}
+	qp := computeQuantParams(pointsFromSlice(pts), dim)
+	idx := NewHNSWIndexQuantized(dim, 4, 20, L2Distance, qp)
+	for i, v := range pts {
+		idx.Insert(uint64(i+1), v)
+	}
+
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	for id, n := range idx.nodes {
+		if len(n.vector) != 0 {
+			t.Fatalf("node %d should not hold float32 vector in quantized mode", id)
+		}
+		if len(n.vectorQ) != dim {
+			t.Fatalf("node %d quantized vector wrong length: %d", id, len(n.vectorQ))
+		}
+	}
+}
+
+func TestHNSW_QuantizedSerializationRoundTrip(t *testing.T) {
+	const dim = 8
+	rng := rand.New(rand.NewSource(2))
+	pts := make([][]float32, 30)
+	for i := range pts {
+		pts[i] = randomVector(dim, rng)
+	}
+	qp := computeQuantParams(pointsFromSlice(pts), dim)
+	src := NewHNSWIndexQuantized(dim, 4, 20, L2Distance, qp)
+	for i, v := range pts {
+		src.Insert(uint64(i+1), v)
+	}
+
+	data, err := src.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	dst, err := DeserializeHNSWIndex(data, L2Distance)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if dst.qp == nil {
+		t.Fatal("deserialized index lost quantization params")
+	}
+
+	q := randomVector(dim, rng)
+	r1 := src.Search(q, 5, 20, nil)
+	r2 := dst.Search(q, 5, 20, nil)
+	if len(r1) != len(r2) {
+		t.Fatalf("result count mismatch: %d vs %d", len(r1), len(r2))
+	}
+	for i := range r1 {
+		if r1[i].ID != r2[i].ID {
+			t.Fatalf("result %d: ID %d vs %d", i, r1[i].ID, r2[i].ID)
+		}
+	}
+}
+
+func pointsFromSlice(vs [][]float32) []Point {
+	out := make([]Point, len(vs))
+	for i, v := range vs {
+		out[i] = Point{ID: uint64(i + 1), Vector: v}
+	}
+	return out
+}
+
 func TestHNSW_InsertAndSearchSingle(t *testing.T) {
 	idx := NewHNSWIndex(3, 4, 20, CosineDistance)
 	idx.Insert(1, []float32{1, 0, 0})
