@@ -4,8 +4,12 @@ package vector
 
 import (
 	"context"
+	"io"
+	"math"
 	mrand "math/rand"
+	"strings"
 	"testing"
+	"time"
 )
 
 func newTestEngine(t *testing.T) *Engine {
@@ -220,6 +224,459 @@ func TestEngine_SearchNonexistentCollection(t *testing.T) {
 	_, err := e.Search(ctx, SearchRequest{Collection: "nope", Vector: []float32{1}, TopK: 1})
 	if err == nil {
 		t.Fatal("expected error for nonexistent collection")
+	}
+}
+
+// slowBackend wraps segTestBackend and adds a configurable delay to
+// vectors.bin / hnsw.bin / payload.bin PUTs to simulate slow sealing.
+type slowBackend struct {
+	*segTestBackend
+	putDelay time.Duration
+}
+
+func (s *slowBackend) PutObject(ctx context.Context, bucket, k string, r io.Reader, n int64, m map[string]string) error {
+	if s.putDelay > 0 && (strings.HasSuffix(k, "/vectors.bin") || strings.HasSuffix(k, "/hnsw.bin") || strings.HasSuffix(k, "/payload.bin")) {
+		time.Sleep(s.putDelay)
+	}
+	return s.segTestBackend.PutObject(ctx, bucket, k, r, n, m)
+}
+
+func TestEngine_AsyncSealDoesNotBlockReads(t *testing.T) {
+	be := &slowBackend{segTestBackend: newSegTestBackend(), putDelay: 200 * time.Millisecond}
+	cfg := VectorConfig{
+		Bucket:           "warp-vectors",
+		SegmentSizeBytes: 64, // tiny — first batch overflows
+		WALFlushCount:    1,
+		HNSWm:            4,
+		HNSWefConstruct:  20,
+		HNSWefSearch:     10,
+		CacheMemoryBytes: 1024 * 1024,
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+	if err := e.CreateCollection(ctx, Collection{Name: "async", Dimensions: 4, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Trigger one seal — it'll take ~600ms (3 slow PUTs) running in background.
+	rng := mrand.New(mrand.NewSource(1))
+	points := make([]Point, 10)
+	for i := range points {
+		points[i] = Point{ID: uint64(i + 1), Vector: randomVector(4, rng)}
+	}
+	t0 := time.Now()
+	if err := e.Insert(ctx, "async", points); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	insertElapsed := time.Since(t0)
+
+	// Insert should return well before the slow seal finishes (~600ms).
+	if insertElapsed > 150*time.Millisecond {
+		t.Fatalf("Insert blocked on seal: took %v", insertElapsed)
+	}
+
+	// Search should also not block on the in-flight seal.
+	t1 := time.Now()
+	if _, err := e.Search(ctx, SearchRequest{Collection: "async", Vector: []float32{0, 0, 0, 0}, TopK: 5}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	searchElapsed := time.Since(t1)
+	if searchElapsed > 100*time.Millisecond {
+		t.Fatalf("Search blocked on in-flight seal: took %v", searchElapsed)
+	}
+
+	// After draining, the sealed segment is visible.
+	if err := e.SyncSealing("async"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	e.mu.RLock()
+	cs := e.collections["async"]
+	e.mu.RUnlock()
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	if len(cs.sealed) == 0 {
+		t.Fatal("expected sealed segment after sync")
+	}
+}
+
+func TestEngine_Int8QuantizationRoundTripAndRecall(t *testing.T) {
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:                "warp-vectors",
+		SegmentSizeBytes:      4096,
+		WALFlushCount:         1,
+		HNSWm:                 8,
+		HNSWefConstruct:       40,
+		HNSWefSearch:          40,
+		CacheMemoryBytes:      1024 * 1024,
+		CompactionMaxSegments: 0, // disable compaction so we observe the raw sealed segment
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+
+	const dim = 16
+	if err := e.CreateCollection(ctx, Collection{
+		Name: "q", Dimensions: dim, Distance: L2, Quantization: QuantInt8,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rng := mrand.New(mrand.NewSource(99))
+	const N = 500
+	pts := make([]Point, N)
+	for i := range pts {
+		pts[i] = Point{ID: uint64(i + 1), Vector: randomVector(dim, rng)}
+	}
+	if err := e.Insert(ctx, "q", pts); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := e.SyncSealing("q"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// Confirm the on-disk format is the quantized one.
+	e.mu.RLock()
+	cs := e.collections["q"]
+	e.mu.RUnlock()
+	cs.mu.RLock()
+	if len(cs.sealed) == 0 {
+		cs.mu.RUnlock()
+		t.Fatal("expected at least one sealed segment")
+	}
+	if cs.sealed[0].Meta.Quantization != QuantInt8 {
+		cs.mu.RUnlock()
+		t.Fatalf("expected QuantInt8 segment, got %q", cs.sealed[0].Meta.Quantization)
+	}
+	cs.mu.RUnlock()
+
+	// Recall sanity: top-1 brute-force should agree with the engine on most
+	// queries despite quantization (int8 with per-dim scale on uniform random
+	// data → small dequant error).
+	matches := 0
+	const Q = 30
+	for q := 0; q < Q; q++ {
+		query := randomVector(dim, rng)
+		// Engine's top-1.
+		resp, err := e.Search(ctx, SearchRequest{Collection: "q", Vector: query, TopK: 1})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(resp.Points) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(resp.Points))
+		}
+		// Brute-force top-1 over the original (pre-quant) vectors.
+		var bestID PointID
+		bestDist := float32(math.MaxFloat32)
+		for _, p := range pts {
+			d := l2DistanceTest(query, p.Vector)
+			if d < bestDist {
+				bestDist = d
+				bestID = p.ID
+			}
+		}
+		if resp.Points[0].ID == bestID {
+			matches++
+		}
+	}
+	// On uniform random vectors with 8-bit per-dim quantization plus HNSW's
+	// inherent approximate recall, expect well above 70% top-1 agreement.
+	if matches*100 < 70*Q {
+		t.Fatalf("recall too low: %d/%d top-1 matches", matches, Q)
+	}
+}
+
+func l2DistanceTest(a, b []float32) float32 {
+	var sum float32
+	for i := range a {
+		d := a[i] - b[i]
+		sum += d * d
+	}
+	return sum
+}
+
+func TestEngine_CompactionMergesSmallestPair(t *testing.T) {
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:                "warp-vectors",
+		SegmentSizeBytes:      1, // every batch overflows
+		WALFlushCount:         1,
+		HNSWm:                 4,
+		HNSWefConstruct:       20,
+		HNSWefSearch:          10,
+		CacheMemoryBytes:      1024 * 1024,
+		CompactionMaxSegments: 2, // compact when > 2 sealed
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+	if err := e.CreateCollection(ctx, Collection{Name: "cmp", Dimensions: 3, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Three batches → three sealed segments → trigger compaction (2 → 1) so
+	// the steady-state count is 2.
+	for i := 1; i <= 3; i++ {
+		if err := e.Insert(ctx, "cmp", []Point{{ID: uint64(i), Vector: []float32{float32(i), 0, 0}}}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	if err := e.SyncSealing("cmp"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	e.mu.RLock()
+	cs := e.collections["cmp"]
+	e.mu.RUnlock()
+	cs.mu.RLock()
+	got := len(cs.sealed)
+	cs.mu.RUnlock()
+	if got != 2 {
+		t.Fatalf("expected 2 sealed segments after compaction, got %d", got)
+	}
+
+	// All three points must still be findable.
+	for i := uint64(1); i <= 3; i++ {
+		pts, err := e.Get(ctx, "cmp", []PointID{i})
+		if err != nil || len(pts) != 1 {
+			t.Fatalf("Get %d: pts=%v err=%v", i, pts, err)
+		}
+	}
+}
+
+func TestEngine_CompactionDropsTombstones(t *testing.T) {
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:                "warp-vectors",
+		SegmentSizeBytes:      1,
+		WALFlushCount:         1,
+		HNSWm:                 4,
+		HNSWefConstruct:       20,
+		HNSWefSearch:          10,
+		CacheMemoryBytes:      1024 * 1024,
+		CompactionMaxSegments: 2,
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+	if err := e.CreateCollection(ctx, Collection{Name: "tomb", Dimensions: 3, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		if err := e.Insert(ctx, "tomb", []Point{{ID: uint64(i), Vector: []float32{float32(i), 0, 0}}}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	// Tombstone point 1 — sits in the oldest sealed segment, so compaction
+	// should physically drop it.
+	if err := e.Delete(ctx, "tomb", []PointID{1}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := e.SyncSealing("tomb"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// Inspect the merged segment: it should not contain ID 1 at all.
+	e.mu.RLock()
+	cs := e.collections["tomb"]
+	e.mu.RUnlock()
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	for _, ss := range cs.sealed {
+		if _, ok := ss.Get(1); ok {
+			t.Fatalf("expected tombstoned point 1 to be physically removed from segment %s", ss.Meta.ID)
+		}
+	}
+}
+
+func TestEngine_AsyncSealBackpressure(t *testing.T) {
+	// With queue capacity 1, a third overflowing Insert must block until the
+	// first seal drains. We assert by timing.
+	be := &slowBackend{segTestBackend: newSegTestBackend(), putDelay: 100 * time.Millisecond}
+	cfg := VectorConfig{
+		Bucket:           "warp-vectors",
+		SegmentSizeBytes: 1, // every batch overflows
+		WALFlushCount:    1,
+		HNSWm:            4,
+		HNSWefConstruct:  20,
+		HNSWefSearch:     10,
+		CacheMemoryBytes: 1024 * 1024,
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+	if err := e.CreateCollection(ctx, Collection{Name: "bp", Dimensions: 3, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// First two Inserts return fast (1 in-flight + 1 queued).
+	for i := 1; i <= 2; i++ {
+		if err := e.Insert(ctx, "bp", []Point{{ID: uint64(i), Vector: []float32{1, 0, 0}}}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	// Third must block waiting for the first seal to drain (~300ms).
+	t0 := time.Now()
+	if err := e.Insert(ctx, "bp", []Point{{ID: 3, Vector: []float32{0, 1, 0}}}); err != nil {
+		t.Fatalf("insert 3: %v", err)
+	}
+	if d := time.Since(t0); d < 50*time.Millisecond {
+		t.Fatalf("expected backpressure to delay third insert, took %v", d)
+	}
+}
+
+func TestEngine_SearchDedupsAcrossSegments(t *testing.T) {
+	// Same PointID written into two different sealed segments must appear once.
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:           "warp-vectors",
+		SegmentSizeBytes: 1, // seal after every batch
+		WALFlushCount:    1,
+		HNSWm:            4,
+		HNSWefConstruct:  20,
+		HNSWefSearch:     10,
+		CacheMemoryBytes: 1024 * 1024,
+	}
+	e, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e.Close() })
+	ctx := context.Background()
+	if err := e.CreateCollection(ctx, Collection{Name: "dup", Dimensions: 3, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// First batch: ID 1 with vector v1 — gets sealed.
+	if err := e.Insert(ctx, "dup", []Point{{ID: 1, Vector: []float32{1, 0, 0}}}); err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+	// Second batch: ID 1 again with a different vector — sealed into a separate segment.
+	if err := e.Insert(ctx, "dup", []Point{{ID: 1, Vector: []float32{0, 1, 0}}}); err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+	// Third batch: a different ID so we can confirm topK still works.
+	if err := e.Insert(ctx, "dup", []Point{{ID: 2, Vector: []float32{0, 0, 1}}}); err != nil {
+		t.Fatalf("insert 3: %v", err)
+	}
+	if err := e.SyncSealing("dup"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	resp, err := e.Search(ctx, SearchRequest{Collection: "dup", Vector: []float32{0, 1, 0}, TopK: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	seen := make(map[PointID]int)
+	for _, p := range resp.Points {
+		seen[p.ID]++
+	}
+	if seen[1] != 1 {
+		t.Fatalf("expected ID 1 to appear exactly once, got %d (results=%+v)", seen[1], resp.Points)
+	}
+	// Newest-wins: ID 1's surviving vector should be the second one ({0,1,0}),
+	// so distance against query {0,1,0} should be 0.
+	for _, p := range resp.Points {
+		if p.ID == 1 && p.Score > 1e-5 {
+			t.Fatalf("expected newest-wins (vector {0,1,0}, score≈0), got score=%g vec=%v", p.Score, p.Vector)
+		}
+	}
+}
+
+func TestEngine_RecoverSealedSegments(t *testing.T) {
+	be := newSegTestBackend()
+	cfg := VectorConfig{
+		Bucket:           "warp-vectors",
+		SegmentSizeBytes: 256, // tiny — forces sealing after a few inserts
+		WALFlushCount:    1,
+		HNSWm:            4,
+		HNSWefConstruct:  20,
+		HNSWefSearch:     10,
+		CacheMemoryBytes: 1024 * 1024,
+	}
+	e1, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	ctx := context.Background()
+	if err := e1.CreateCollection(ctx, Collection{Name: "rec", Dimensions: 4, Distance: L2}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rng := mrand.New(mrand.NewSource(7))
+	// Insert in 3 batches; each batch should overflow segment_size and trigger seal.
+	for batch := 0; batch < 3; batch++ {
+		points := make([]Point, 20)
+		for i := range points {
+			points[i] = Point{ID: uint64(batch*100 + i + 1), Vector: randomVector(4, rng)}
+		}
+		if err := e1.Insert(ctx, "rec", points); err != nil {
+			t.Fatalf("insert batch %d: %v", batch, err)
+		}
+	}
+
+	if err := e1.SyncSealing("rec"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	// Confirm sealing actually happened in e1.
+	e1.mu.RLock()
+	cs1 := e1.collections["rec"]
+	e1.mu.RUnlock()
+	cs1.mu.RLock()
+	sealedCount := len(cs1.sealed)
+	cs1.mu.RUnlock()
+	if sealedCount == 0 {
+		t.Fatal("test setup: expected at least one sealed segment in e1")
+	}
+	e1.Close()
+
+	// Boot a fresh engine on the same backend.
+	e2, err := NewEngine(be, cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	t.Cleanup(func() { e2.Close() })
+	if err := e2.LoadCollectionsFromBackend(ctx); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	e2.mu.RLock()
+	cs2, ok := e2.collections["rec"]
+	e2.mu.RUnlock()
+	if !ok {
+		t.Fatal("collection not recovered")
+	}
+	cs2.mu.RLock()
+	got := len(cs2.sealed)
+	cs2.mu.RUnlock()
+	if got != sealedCount {
+		t.Fatalf("expected %d sealed segments after recovery, got %d", sealedCount, got)
+	}
+
+	// A point that lived in a sealed segment must still be searchable.
+	resp, err := e2.Search(ctx, SearchRequest{Collection: "rec", Vector: []float32{0, 0, 0, 0}, TopK: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(resp.Points) == 0 {
+		t.Fatal("expected results from recovered sealed segments")
 	}
 }
 

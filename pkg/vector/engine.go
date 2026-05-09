@@ -17,13 +17,28 @@ import (
 	"github.com/prysmsh/warp-storage-engine/internal/storage"
 )
 
+type sealJob struct {
+	snapshot *GrowingSegment
+	walSeq   uint64
+	// barrier is signalled after the job is processed. nil snapshot + non-nil
+	// barrier denotes a flush-only sentinel used by SyncSealing.
+	barrier chan struct{}
+}
+
 type collectionState struct {
 	mu         sync.RWMutex
 	collection Collection
 	growing    *GrowingSegment
-	sealed     []*SealedSegment
-	wal        *WAL
-	deleted    map[PointID]struct{}
+	// sealing tracks snapshots that have been rotated off `growing` but not
+	// yet appended to `sealed`. Search must include these to avoid losing
+	// visibility on points during the in-flight window.
+	sealing []*GrowingSegment
+	sealed  []*SealedSegment
+	wal     *WAL
+	deleted map[PointID]struct{}
+
+	sealQueue chan sealJob
+	sealerWG  sync.WaitGroup
 }
 
 // Engine is a single-node vector database engine.
@@ -33,6 +48,7 @@ type Engine struct {
 	cfg         VectorConfig
 	collections map[string]*collectionState
 	cache       *SegmentCache
+	closed      chan struct{}
 }
 
 // NewEngine creates a new vector engine.
@@ -57,17 +73,191 @@ func NewEngine(backend storage.Backend, cfg VectorConfig) (*Engine, error) {
 		cfg:         cfg,
 		collections: make(map[string]*collectionState),
 		cache:       NewSegmentCache(cfg.CacheMemoryBytes),
+		closed:      make(chan struct{}),
 	}, nil
 }
 
 func (e *Engine) Close() error {
+	select {
+	case <-e.closed:
+		return nil
+	default:
+		close(e.closed)
+	}
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	ctx := context.Background()
+	collections := make([]*collectionState, 0, len(e.collections))
 	for _, cs := range e.collections {
+		collections = append(collections, cs)
+	}
+	e.mu.RUnlock()
+
+	ctx := context.Background()
+	for _, cs := range collections {
 		cs.wal.Flush(ctx)
+		close(cs.sealQueue)
+	}
+	for _, cs := range collections {
+		cs.sealerWG.Wait()
 	}
 	return nil
+}
+
+// SyncSealing blocks until any in-flight or queued seals for the named
+// collection have completed. Intended for tests and graceful shutdown paths
+// that need a stable view of cs.sealed.
+func (e *Engine) SyncSealing(collection string) error {
+	e.mu.RLock()
+	cs, ok := e.collections[collection]
+	e.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("collection %q not found", collection)
+	}
+	// Round-trip a barrier sentinel: when its done channel closes, the sealer
+	// has finished all prior jobs (it is single-goroutine).
+	done := make(chan struct{})
+	cs.sealQueue <- sealJob{barrier: done}
+	<-done
+	return nil
+}
+
+// startSealer launches the per-collection background sealing goroutine.
+func (e *Engine) startSealer(cs *collectionState) {
+	cs.sealerWG.Add(1)
+	go func() {
+		defer cs.sealerWG.Done()
+		for job := range cs.sealQueue {
+			e.runSealJob(cs, job)
+		}
+	}()
+}
+
+func (e *Engine) runSealJob(cs *collectionState, job sealJob) {
+	defer func() {
+		if job.barrier != nil {
+			close(job.barrier)
+		}
+	}()
+	if job.snapshot == nil {
+		return
+	}
+	ctx := context.Background()
+	cs.mu.RLock()
+	quant := cs.collection.Quantization
+	cs.mu.RUnlock()
+	sealed, err := SealSegment(ctx, job.snapshot, e.backend, e.cfg.Bucket, e.cfg.HNSWm, e.cfg.HNSWefConstruct, quant)
+	if err != nil {
+		// Data is still durable in the WAL; on restart the snapshot will be
+		// rebuilt and re-sealed. Surface failure on the sealing channel via
+		// a sticky error in a future iteration; for now, drop the job.
+		return
+	}
+	cs.mu.Lock()
+	cs.sealed = append(cs.sealed, sealed)
+	// Drop the matching in-flight snapshot. Equality by pointer is safe — the
+	// snapshot is owned by the sealer once handed off and isn't reused.
+	for i, sn := range cs.sealing {
+		if sn == job.snapshot {
+			cs.sealing = append(cs.sealing[:i], cs.sealing[i+1:]...)
+			break
+		}
+	}
+	cs.mu.Unlock()
+	e.cache.Put(sealed.Meta.ID, sealed)
+
+	_ = cs.wal.TruncateUpTo(ctx, job.walSeq)
+
+	if e.cfg.CompactionMaxSegments > 0 {
+		_ = e.maybeCompact(ctx, cs)
+	}
+}
+
+// maybeCompact merges the two smallest sealed segments if the count exceeds
+// the configured threshold. Tombstoned points are dropped during the merge.
+func (e *Engine) maybeCompact(ctx context.Context, cs *collectionState) error {
+	cs.mu.RLock()
+	if len(cs.sealed) <= e.cfg.CompactionMaxSegments {
+		cs.mu.RUnlock()
+		return nil
+	}
+	a, b := pickSmallestPair(cs.sealed)
+	deletedSnapshot := make(map[PointID]struct{}, len(cs.deleted))
+	for id := range cs.deleted {
+		deletedSnapshot[id] = struct{}{}
+	}
+	collection := cs.collection
+	cs.mu.RUnlock()
+
+	if a == nil || b == nil {
+		return nil
+	}
+
+	mergedID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
+	merged := NewGrowingSegment(mergedID, collection.Name, 0, collection.Dimensions, collection.Distance)
+	// Insert b's points last so newest-wins for any duplicate ID across the
+	// pair (b has the larger ULID and is therefore newer).
+	older, newer := a, b
+	if a.Meta.ID.Compare(b.Meta.ID) > 0 {
+		older, newer = b, a
+	}
+	seenInNewer := make(map[PointID]struct{})
+	for _, p := range newer.Points() {
+		if _, dropped := deletedSnapshot[p.ID]; dropped {
+			continue
+		}
+		merged.Insert(p)
+		seenInNewer[p.ID] = struct{}{}
+	}
+	for _, p := range older.Points() {
+		if _, dropped := deletedSnapshot[p.ID]; dropped {
+			continue
+		}
+		if _, shadowed := seenInNewer[p.ID]; shadowed {
+			continue
+		}
+		merged.Insert(p)
+	}
+
+	mergedSealed, err := SealSegment(ctx, merged, e.backend, e.cfg.Bucket, e.cfg.HNSWm, e.cfg.HNSWefConstruct, collection.Quantization)
+	if err != nil {
+		return fmt.Errorf("compact seal: %w", err)
+	}
+
+	// Atomically replace [a, b] with [mergedSealed] in cs.sealed.
+	cs.mu.Lock()
+	newSealed := make([]*SealedSegment, 0, len(cs.sealed)-1)
+	for _, ss := range cs.sealed {
+		if ss == a || ss == b {
+			continue
+		}
+		newSealed = append(newSealed, ss)
+	}
+	newSealed = append(newSealed, mergedSealed)
+	sort.Slice(newSealed, func(i, j int) bool {
+		return newSealed[i].Meta.ID.Compare(newSealed[j].Meta.ID) < 0
+	})
+	cs.sealed = newSealed
+	cs.mu.Unlock()
+
+	e.cache.Put(mergedSealed.Meta.ID, mergedSealed)
+	// Old segment files are garbage now; readers no longer reference them
+	// because cs.sealed has been swapped under cs.mu.
+	_ = a.DeleteFromBackend(ctx, e.backend, e.cfg.Bucket)
+	_ = b.DeleteFromBackend(ctx, e.backend, e.cfg.Bucket)
+	return nil
+}
+
+func pickSmallestPair(segs []*SealedSegment) (*SealedSegment, *SealedSegment) {
+	if len(segs) < 2 {
+		return nil, nil
+	}
+	idx := make([]int, len(segs))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.Slice(idx, func(i, j int) bool {
+		return segs[idx[i]].Meta.PointCount < segs[idx[j]].Meta.PointCount
+	})
+	return segs[idx[0]], segs[idx[1]]
 }
 
 func (e *Engine) CreateCollection(ctx context.Context, col Collection) error {
@@ -104,12 +294,15 @@ func (e *Engine) CreateCollection(ctx context.Context, col Collection) error {
 	wal := NewWAL(e.backend, e.cfg.Bucket, col.Name, 0)
 	wal.SetFlushThresholds(e.cfg.WALFlushCount, e.cfg.WALFlushInterval)
 
-	e.collections[col.Name] = &collectionState{
+	cs := &collectionState{
 		collection: col,
 		growing:    NewGrowingSegment(segID, col.Name, 0, col.Dimensions, col.Distance),
 		wal:        wal,
 		deleted:    make(map[PointID]struct{}),
+		sealQueue:  make(chan sealJob, 1),
 	}
+	e.collections[col.Name] = cs
+	e.startSealer(cs)
 	return nil
 }
 
@@ -136,13 +329,17 @@ func (e *Engine) ListCollections(_ context.Context) ([]Collection, error) {
 
 func (e *Engine) DeleteCollection(ctx context.Context, name string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	cs, ok := e.collections[name]
 	if !ok {
+		e.mu.Unlock()
 		return fmt.Errorf("collection %q not found", name)
 	}
-	cs.wal.Flush(ctx)
 	delete(e.collections, name)
+	e.mu.Unlock()
+
+	cs.wal.Flush(ctx)
+	close(cs.sealQueue)
+	cs.sealerWG.Wait()
 	return nil
 }
 
@@ -174,19 +371,27 @@ func (e *Engine) Insert(ctx context.Context, collection string, points []Point) 
 	return nil
 }
 
+// sealGrowingLocked rotates the growing segment under cs.mu and hands the old
+// snapshot to the per-collection sealer. The actual seal (HNSW build + S3 PUTs)
+// runs asynchronously; the channel has capacity 1 so a second pending seal
+// blocks the caller, applying backpressure when sealing falls behind.
 func (e *Engine) sealGrowingLocked(ctx context.Context, cs *collectionState) error {
-	sealed, err := SealSegment(ctx, cs.growing, e.backend, e.cfg.Bucket, e.cfg.HNSWm, e.cfg.HNSWefConstruct)
+	walSeq, err := cs.wal.Flush(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("flush WAL before seal: %w", err)
 	}
-	cs.sealed = append(cs.sealed, sealed)
-	e.cache.Put(sealed.Meta.ID, sealed)
-
-	cs.wal.Flush(ctx)
-	cs.wal.Truncate(ctx)
+	snapshot := cs.growing
 
 	newID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
 	cs.growing = NewGrowingSegment(newID, cs.collection.Name, 0, cs.collection.Dimensions, cs.collection.Distance)
+	cs.sealing = append(cs.sealing, snapshot)
+
+	// Release cs.mu while waiting for queue space — otherwise readers block
+	// behind a slow sealer. Re-acquire before returning so the caller's defer
+	// Unlock matches the lock state it expects.
+	cs.mu.Unlock()
+	cs.sealQueue <- sealJob{snapshot: snapshot, walSeq: walSeq}
+	cs.mu.Lock()
 	return nil
 }
 
@@ -215,10 +420,16 @@ func (e *Engine) Search(_ context.Context, req SearchRequest) (*SearchResponse, 
 	var allow map[uint64]struct{}
 	if req.Filter != nil {
 		combined := NewBitmapIndex()
-		for _, p := range cs.growing.Points() {
-			for k, v := range p.Payload {
-				combined.Add(p.ID, k, fmt.Sprint(v))
+		addPoints := func(pts []Point) {
+			for _, p := range pts {
+				for k, v := range p.Payload {
+					combined.Add(p.ID, k, fmt.Sprint(v))
+				}
 			}
+		}
+		addPoints(cs.growing.Points())
+		for _, sn := range cs.sealing {
+			addPoints(sn.Points())
 		}
 		for _, ss := range cs.sealed {
 			bm := ss.BitmapIndex()
@@ -250,31 +461,38 @@ func (e *Engine) Search(_ context.Context, req SearchRequest) (*SearchResponse, 
 		}
 	}
 
-	growingResults := cs.growing.Search(req.Vector, topK, allow)
-	if exclude != nil {
-		filtered := growingResults[:0]
-		for _, r := range growingResults {
-			if _, ok := exclude[r.ID]; !ok {
-				filtered = append(filtered, r)
+	// Merge with newest-wins dedup: iterate sources oldest → newest so later
+	// writes overwrite earlier ones. Sealed segments are in creation order
+	// (sorted by ULID); growing is the most recent source.
+	merged := make(map[PointID]ScoredPoint)
+	keep := func(r ScoredPoint) {
+		if exclude != nil {
+			if _, ok := exclude[r.ID]; ok {
+				return
 			}
 		}
-		growingResults = filtered
+		merged[r.ID] = r
 	}
-
-	var sealedResults []ScoredPoint
 	for _, ss := range cs.sealed {
-		results := ss.Search(req.Vector, topK, efSearch, allow)
-		for _, r := range results {
-			if exclude != nil {
-				if _, ok := exclude[r.ID]; ok {
-					continue
-				}
-			}
-			sealedResults = append(sealedResults, r)
+		for _, r := range ss.Search(req.Vector, topK, efSearch, allow) {
+			keep(r)
 		}
 	}
+	// In-flight snapshots are older than the live growing segment but newer
+	// than every sealed segment that wasn't built from them.
+	for _, sn := range cs.sealing {
+		for _, r := range sn.Search(req.Vector, topK, allow) {
+			keep(r)
+		}
+	}
+	for _, r := range cs.growing.Search(req.Vector, topK, allow) {
+		keep(r)
+	}
 
-	all := append(growingResults, sealedResults...)
+	all := make([]ScoredPoint, 0, len(merged))
+	for _, r := range merged {
+		all = append(all, r)
+	}
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].Score < all[j].Score
 	})
@@ -308,8 +526,19 @@ func (e *Engine) Get(_ context.Context, collection string, ids []PointID) ([]Poi
 			results = append(results, p)
 			continue
 		}
-		for _, ss := range cs.sealed {
-			if p, ok := ss.Get(id); ok {
+		found := false
+		for i := len(cs.sealing) - 1; i >= 0; i-- {
+			if p, ok := cs.sealing[i].Get(id); ok {
+				results = append(results, p)
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		for i := len(cs.sealed) - 1; i >= 0; i-- {
+			if p, ok := cs.sealed[i].Get(id); ok {
 				results = append(results, p)
 				break
 			}
@@ -374,6 +603,16 @@ func (e *Engine) LoadCollectionsFromBackend(ctx context.Context) error {
 				growing:    NewGrowingSegment(segID, col.Name, 0, col.Dimensions, col.Distance),
 				wal:        wal,
 				deleted:    make(map[PointID]struct{}),
+				sealQueue:  make(chan sealJob, 1),
+			}
+
+			sealed, err := loadSealedSegmentsForShard(ctx, e.backend, e.cfg.Bucket, col.Name, 0, col.Distance)
+			if err != nil {
+				return fmt.Errorf("load sealed segments for %q: %w", col.Name, err)
+			}
+			cs.sealed = sealed
+			for _, ss := range sealed {
+				e.cache.Put(ss.Meta.ID, ss)
 			}
 
 			entries, _ := ReplayWAL(ctx, e.backend, e.cfg.Bucket, col.Name, 0)
@@ -389,9 +628,51 @@ func (e *Engine) LoadCollectionsFromBackend(ctx context.Context) error {
 			e.mu.Lock()
 			e.collections[col.Name] = cs
 			e.mu.Unlock()
+			e.startSealer(cs)
 		}
 	}
 	return nil
+}
+
+// loadSealedSegmentsForShard discovers segment IDs under <col>/<shard>/segments/
+// and loads each one. Segments are returned sorted by ULID (creation order).
+func loadSealedSegmentsForShard(ctx context.Context, be storage.Backend, bucket, col string, shard int, metric DistanceMetric) ([]*SealedSegment, error) {
+	prefix := fmt.Sprintf("%s/%d/segments/", col, shard)
+	result, err := be.ListObjects(ctx, bucket, prefix, "", 10000)
+	if err != nil {
+		return nil, fmt.Errorf("list segments: %w", err)
+	}
+
+	seen := make(map[string]struct{})
+	var ids []ulid.ULID
+	for _, obj := range result.Contents {
+		// Key shape: <col>/<shard>/segments/<segID>/meta.json
+		parts := splitKey(obj.Key)
+		if len(parts) != 5 || parts[4] != "meta.json" {
+			continue
+		}
+		idStr := parts[3]
+		if _, ok := seen[idStr]; ok {
+			continue
+		}
+		id, err := ulid.Parse(idStr)
+		if err != nil {
+			continue
+		}
+		seen[idStr] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].Compare(ids[j]) < 0 })
+
+	segments := make([]*SealedSegment, 0, len(ids))
+	for _, id := range ids {
+		ss, err := LoadSealedSegment(ctx, be, bucket, col, shard, id, metric)
+		if err != nil {
+			return nil, fmt.Errorf("load segment %s: %w", id.String(), err)
+		}
+		segments = append(segments, ss)
+	}
+	return segments, nil
 }
 
 func splitKey(key string) []string {

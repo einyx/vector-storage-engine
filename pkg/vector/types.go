@@ -39,6 +39,13 @@ type FieldSchema struct {
 	Indexed bool      `json:"indexed"`
 }
 
+type Quantization string
+
+const (
+	QuantNone Quantization = ""
+	QuantInt8 Quantization = "int8"
+)
+
 type Collection struct {
 	Name        string           `json:"name"`
 	Dimensions  int              `json:"dimensions"`
@@ -47,8 +54,12 @@ type Collection struct {
 	Replication int              `json:"replication"`
 	Consistency ConsistencyLevel `json:"consistency"`
 	ShardCount  int              `json:"shard_count"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	// Quantization, if set, controls the on-disk encoding for sealed-segment
+	// vectors. Values are dequantized on load — RAM footprint is unchanged
+	// in this revision; only object storage and network bytes shrink.
+	Quantization Quantization `json:"quantization,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 type PointID = uint64
@@ -76,16 +87,17 @@ const (
 )
 
 type SegmentMeta struct {
-	ID         SegmentID      `json:"id"`
-	Collection string         `json:"collection"`
-	Shard      int            `json:"shard"`
-	State      SegmentState   `json:"state"`
-	PointCount int            `json:"point_count"`
-	SizeBytes  int64          `json:"size_bytes"`
-	Dimensions int            `json:"dimensions"`
-	Distance   DistanceMetric `json:"distance"`
-	CreatedAt  time.Time      `json:"created_at"`
-	SealedAt   *time.Time     `json:"sealed_at,omitempty"`
+	ID           SegmentID      `json:"id"`
+	Collection   string         `json:"collection"`
+	Shard        int            `json:"shard"`
+	State        SegmentState   `json:"state"`
+	PointCount   int            `json:"point_count"`
+	SizeBytes    int64          `json:"size_bytes"`
+	Dimensions   int            `json:"dimensions"`
+	Distance     DistanceMetric `json:"distance"`
+	Quantization Quantization   `json:"quantization,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	SealedAt     *time.Time     `json:"sealed_at,omitempty"`
 }
 
 type FilterOp string
@@ -136,4 +148,7 @@ type VectorConfig struct {
 	CacheMemoryBytes int64         `mapstructure:"cache_memory_budget" envconfig:"VECTOR_CACHE_MEMORY_BUDGET" default:"1073741824"`
 	CacheSSDPath     string        `mapstructure:"cache_ssd_path" envconfig:"VECTOR_CACHE_SSD_PATH" default:""`
 	CacheSSDBytes    int64         `mapstructure:"cache_ssd_budget" envconfig:"VECTOR_CACHE_SSD_BUDGET" default:"10737418240"`
+	// CompactionMaxSegments: when len(sealed) exceeds this, the sealer merges
+	// the two smallest sealed segments into one. 0 disables compaction.
+	CompactionMaxSegments int `mapstructure:"compaction_max_segments" envconfig:"VECTOR_COMPACTION_MAX_SEGMENTS" default:"8"`
 }

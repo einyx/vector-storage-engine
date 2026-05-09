@@ -24,7 +24,7 @@ func TestWAL_AppendAndReplay(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := w.Flush(ctx); err != nil {
+	if _, err := w.Flush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,17 +80,21 @@ func (w *WAL) Append(entry WALEntry) error {
 	w.mu.Unlock()
 
 	if shouldFlush {
-		return w.Flush(context.Background())
+		_, err := w.Flush(context.Background())
+		return err
 	}
 	return nil
 }
 
-// Flush writes all buffered entries to the storage backend as a single batch.
-func (w *WAL) Flush(ctx context.Context) error {
+// Flush writes all buffered entries to the storage backend as a single batch
+// and returns the sequence number assigned to the flushed batch (0 if nothing
+// was flushed). The returned sequence can later be passed to TruncateUpTo.
+func (w *WAL) Flush(ctx context.Context) (uint64, error) {
 	w.mu.Lock()
 	if len(w.buffer) == 0 {
+		seq := w.sequence
 		w.mu.Unlock()
-		return nil
+		return seq, nil
 	}
 	entries := w.buffer
 	w.buffer = nil
@@ -104,10 +109,13 @@ func (w *WAL) Flush(ctx context.Context) error {
 	}
 	data, err := json.Marshal(batch)
 	if err != nil {
-		return fmt.Errorf("marshal WAL batch: %w", err)
+		return 0, fmt.Errorf("marshal WAL batch: %w", err)
 	}
 	key := w.walKey(seq)
-	return w.backend.PutObject(ctx, w.bucket, key, bytes.NewReader(data), int64(len(data)), nil)
+	if err := w.backend.PutObject(ctx, w.bucket, key, bytes.NewReader(data), int64(len(data)), nil); err != nil {
+		return 0, err
+	}
+	return seq, nil
 }
 
 // Truncate removes all WAL files for this collection/shard.
@@ -126,6 +134,47 @@ func (w *WAL) Truncate(ctx context.Context) error {
 	w.sequence = 0
 	w.mu.Unlock()
 	return nil
+}
+
+// TruncateUpTo removes WAL files whose sequence number is <= maxSeq, leaving
+// later batches in place. Used by async sealing: once a snapshot is durable in
+// a sealed segment, its WAL entries can be discarded without touching newer
+// ones still describing the active growing segment.
+func (w *WAL) TruncateUpTo(ctx context.Context, maxSeq uint64) error {
+	if maxSeq == 0 {
+		return nil
+	}
+	prefix := w.walPrefix()
+	result, err := w.backend.ListObjects(ctx, w.bucket, prefix, "", 10000)
+	if err != nil {
+		return fmt.Errorf("list WAL files: %w", err)
+	}
+	for _, obj := range result.Contents {
+		seq, ok := parseWALSeq(obj.Key)
+		if !ok || seq > maxSeq {
+			continue
+		}
+		if err := w.backend.DeleteObject(ctx, w.bucket, obj.Key); err != nil {
+			return fmt.Errorf("delete WAL %s: %w", obj.Key, err)
+		}
+	}
+	return nil
+}
+
+func parseWALSeq(key string) (uint64, bool) {
+	base := key
+	if i := strings.LastIndex(key, "/"); i >= 0 {
+		base = key[i+1:]
+	}
+	if !strings.HasSuffix(base, ".wal") {
+		return 0, false
+	}
+	num := strings.TrimSuffix(base, ".wal")
+	seq, err := strconv.ParseUint(num, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return seq, true
 }
 
 func (w *WAL) walPrefix() string {
