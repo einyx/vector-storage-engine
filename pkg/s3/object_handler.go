@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5" //nolint:gosec // MD5 is required for S3 compatibility
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,18 @@ import (
 
 	"github.com/prysmsh/warp-storage-engine/internal/storage"
 )
+
+// logStorageGetErr emits a log line at the appropriate severity for a backend
+// fetch error. Not-found is an expected outcome of probe-style reads (e.g.
+// Vault checking whether a key exists before writing it), so it logs at Debug.
+// Anything else is a real backend failure and logs at Error.
+func logStorageGetErr(logger *logrus.Entry, err error, msg string) {
+	if errors.Is(err, storage.ErrObjectNotFound) {
+		logger.WithError(err).Debug(msg)
+		return
+	}
+	logger.WithError(err).Error(msg)
+}
 
 // handleObject handles object-level operations (GET, PUT, DELETE, HEAD, POST)
 func (h *Handler) handleObject(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +203,7 @@ func (h *Handler) getObject(w http.ResponseWriter, r *http.Request, bucket, key 
 
 	obj, err := h.storage.GetObject(ctx, bucket, key)
 	if err != nil {
-		logger.WithError(err).Error("Failed to get object")
+		logStorageGetErr(logger, err, "Failed to get object")
 		h.sendError(w, err, http.StatusNotFound)
 		return
 	}
@@ -247,7 +260,7 @@ func (h *Handler) getRangeObject(w http.ResponseWriter, r *http.Request, bucket,
 	// Get object metadata first to validate range
 	info, err := h.storage.HeadObject(ctx, bucket, key)
 	if err != nil {
-		logger.WithError(err).Error("Failed to get object info for range request")
+		logStorageGetErr(logger, err, "Failed to get object info for range request")
 		h.sendError(w, err, http.StatusNotFound)
 		return
 	}
@@ -262,7 +275,7 @@ func (h *Handler) getRangeObject(w http.ResponseWriter, r *http.Request, bucket,
 
 	fullObj, err := h.storage.GetObject(ctx, bucket, key)
 	if err != nil {
-		logger.WithError(err).Error("Failed to get object for range request")
+		logStorageGetErr(logger, err, "Failed to get object for range request")
 		h.sendError(w, err, http.StatusNotFound)
 		return
 	}
@@ -870,7 +883,7 @@ func (h *Handler) headObject(w http.ResponseWriter, r *http.Request, bucket, key
 	start := time.Now()
 	obj, err := h.storage.HeadObject(ctx, bucket, key)
 	if err != nil {
-		logger.WithError(err).Error("Failed to get object info")
+		logStorageGetErr(logger, err, "Failed to get object info")
 		h.sendError(w, err, http.StatusNotFound)
 		return
 	}

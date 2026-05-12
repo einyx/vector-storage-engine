@@ -3,12 +3,19 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 )
+
+// ErrObjectNotFound is returned by backends when GetObject/HeadObject targets a
+// key that does not exist. Callers should use errors.Is to detect it so they
+// can downgrade logging and return a proper 404/NoSuchKey instead of treating
+// every storage error as a not-found.
+var ErrObjectNotFound = errors.New("object not found")
 
 // Backend interface for S3-compatible storage operations
 type Backend interface {

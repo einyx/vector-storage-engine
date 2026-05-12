@@ -289,7 +289,10 @@ func (fs *FileSystemBackend) GetObject(ctx context.Context, bucket, key string) 
 
 	info, err := os.Stat(objectPath)
 	if err != nil {
-		return nil, fmt.Errorf("object not found: %w", err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %v", ErrObjectNotFound, err)
+		}
+		return nil, fmt.Errorf("stat object: %w", err)
 	}
 
 	file, err := os.Open(objectPath) //nolint:gosec // objectPath is controlled
@@ -558,13 +561,16 @@ func (fs *FileSystemBackend) HeadObject(ctx context.Context, bucket, key string)
 
 	info, err := os.Stat(objectPath)
 	if err != nil {
-		return nil, fmt.Errorf("object not found: %w", err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %v", ErrObjectNotFound, err)
+		}
+		return nil, fmt.Errorf("stat object: %w", err)
 	}
 
 	// For S3 compatibility: directories should return 404 for HEAD requests
 	// when accessed without a trailing "/", as S3 directories don't exist as objects
 	if info.IsDir() && !strings.HasSuffix(key, "/") {
-		return nil, fmt.Errorf("object not found: %w", os.ErrNotExist)
+		return nil, fmt.Errorf("%w: directory key without trailing slash", ErrObjectNotFound)
 	}
 
 	// Load metadata from .meta file if it exists
