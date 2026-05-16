@@ -23,7 +23,7 @@ func newMockKeyProvider() *mockKeyProvider {
 	// Generate a 32-byte key for AES-256
 	key := make([]byte, 32)
 	rand.Read(key)
-	
+
 	return &mockKeyProvider{
 		name: "test-key",
 		dek:  key,
@@ -304,6 +304,81 @@ func TestSimpleAESGCMEncryptor_LargeFile(t *testing.T) {
 	// Verify
 	if !bytes.Equal(originalData, decrypted) {
 		t.Error("Decrypted data doesn't match original")
+	}
+}
+
+func TestSimpleAESGCMEncryptor_ChunkedStream_OverThreshold(t *testing.T) {
+	keyProvider := newMockKeyProvider()
+	encryptor := NewSimpleAESGCMEncryptor(keyProvider)
+	encryptor.maxMemorySize = 64 * 1024
+
+	originalData := make([]byte, 128*1024)
+	if _, err := rand.Read(originalData); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bytes.NewReader(originalData)
+	ctx := context.Background()
+
+	encReader, metadata, err := encryptor.Encrypt(ctx, reader, int64(len(originalData)))
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+
+	if metadata[types.MetadataKeyStreamingFormat] != types.StreamingFormatAESGCMChunkedV1 {
+		t.Fatalf("expected chunked streaming metadata, got %#v", metadata[types.MetadataKeyStreamingFormat])
+	}
+	if n, ok := metadata[types.MetadataKeyNonce]; ok && n != "" {
+		t.Fatal("chunked format should not ship a metadata nonce")
+	}
+
+	encrypted, err := io.ReadAll(encReader)
+	if err != nil {
+		t.Fatalf("read encrypted stream: %v", err)
+	}
+
+	decReader, err := encryptor.Decrypt(ctx, bytes.NewReader(encrypted), metadata)
+	if err != nil {
+		t.Fatalf("Decrypt failed: %v", err)
+	}
+
+	decrypted, err := io.ReadAll(decReader)
+	if err != nil {
+		t.Fatalf("read decrypted stream: %v", err)
+	}
+
+	if !bytes.Equal(originalData, decrypted) {
+		t.Fatal("chunked decrypt mismatch")
+	}
+}
+
+func TestSimpleAESGCMEncryptor_ChunkedStream_UnknownSize(t *testing.T) {
+	keyProvider := newMockKeyProvider()
+	encryptor := NewSimpleAESGCMEncryptor(keyProvider)
+
+	data := []byte("payload-unknown-size")
+	encReader, metadata, err := encryptor.Encrypt(context.Background(), bytes.NewReader(data), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata[types.MetadataKeyStreamingFormat] != types.StreamingFormatAESGCMChunkedV1 {
+		t.Fatalf("expected chunked format for unknown size")
+	}
+
+	blob, err := io.ReadAll(encReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decReader, err := encryptor.Decrypt(context.Background(), bytes.NewReader(blob), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(decReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, out) {
+		t.Fatalf("got %q want %q", out, data)
 	}
 }
 

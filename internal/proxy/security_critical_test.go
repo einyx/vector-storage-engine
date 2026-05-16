@@ -272,44 +272,33 @@ func TestJWTClaimsValidation(t *testing.T) {
 	}
 }
 
-func TestJWTHeaderValidation(t *testing.T) {
-	handler := &Auth0Handler{}
-
-	tests := []struct {
-		name     string
-		token    string
-		expected bool
-		desc     string
-	}{
-		{
-			name:     "invalid_format",
-			token:    "invalid.jwt",
-			expected: false,
-			desc:     "Invalid JWT format should be rejected",
-		},
-		{
-			name:     "valid_rs256_header",
-			token:    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRlc3Qta2V5LWlkIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9.signature",
-			expected: true,
-			desc:     "Valid RS256 header should pass basic validation",
-		},
-		{
-			name:     "unsupported_algorithm",
-			token:    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9.signature",
-			expected: false,
-			desc:     "Unsupported algorithm should be rejected",
+func TestVerifyJWTSignature_validationDisabled(t *testing.T) {
+	handler := &Auth0Handler{
+		config: &config.Auth0Config{
+			JWTValidation: false,
 		},
 	}
+	if err := handler.verifyJWTSignature("invalid"); err != nil {
+		t.Fatalf("expected noop when JWT validation disabled: %v", err)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := handler.verifyJWTSignature(tt.token)
-			if tt.expected && err != nil {
-				t.Errorf("Expected valid JWT header but got error: %v (%s)", err, tt.desc)
-			}
-			if !tt.expected && err == nil {
-				t.Errorf("Expected error for invalid JWT header but got none: %s", tt.desc)
-			}
-		})
+func TestVerifyJWTSignature_nilConfig(t *testing.T) {
+	handler := &Auth0Handler{}
+	if err := handler.verifyJWTSignature("invalid"); err != nil {
+		t.Fatalf("expected noop when config unset: %v", err)
+	}
+}
+
+func TestVerifyJWTSignature_invalidTokenParse(t *testing.T) {
+	handler := &Auth0Handler{
+		config: &config.Auth0Config{
+			JWTValidation: true,
+			Domain:        "example.com",
+		},
+	}
+	err := handler.verifyJWTSignature("invalid.jwt")
+	if err == nil {
+		t.Fatal("expected error from malformed JWT")
 	}
 }

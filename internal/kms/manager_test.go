@@ -146,7 +146,7 @@ func TestGetEncryptionHeaders_EmptyDefaultKeyID(t *testing.T) {
 }
 
 func TestDataKeyCache(t *testing.T) {
-	cache := NewDataKeyCache(100 * time.Millisecond)
+	cache := NewDataKeyCache(100*time.Millisecond, nil)
 	defer cache.Close()
 
 	dataKey := &DataKey{
@@ -272,7 +272,7 @@ func TestManager_Close(t *testing.T) {
 	// nil receiver
 	(*Manager)(nil).Close()
 	// with cache
-	m := &Manager{config: &Config{Enabled: false}, dataKeyCache: NewDataKeyCache(time.Minute)}
+	m := &Manager{config: &Config{Enabled: false}, dataKeyCache: NewDataKeyCache(time.Minute, nil)}
 	m.Close()
 }
 
@@ -295,19 +295,19 @@ func TestNewProvider(t *testing.T) {
 	// Local provider
 	p, err := NewProvider(ctx, &ProviderConfig{Type: ProviderTypeLocal, Config: map[string]interface{}{
 		"master_key": hex.EncodeToString(make([]byte, 32)),
-	}})
+	}}, nil)
 	assert.NoError(t, err)
 	require.NotNil(t, p)
 	assert.Equal(t, string(ProviderTypeLocal), p.Name())
 
 	// Unsupported type
-	_, err = NewProvider(ctx, &ProviderConfig{Type: ProviderType("invalid")})
+	_, err = NewProvider(ctx, &ProviderConfig{Type: ProviderType("invalid")}, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported provider type")
 }
 
 func TestDataKeyCache_Delete_NilEmpty(t *testing.T) {
-	cache := NewDataKeyCache(time.Minute)
+	cache := NewDataKeyCache(time.Minute, nil)
 	defer cache.Close()
 	key := &DataKey{KeyID: "k", PlaintextKey: []byte("x")}
 	cache.Put("k1", key)

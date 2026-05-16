@@ -797,7 +797,7 @@ func (s *S3Backend) GetObject(ctx context.Context, bucket, key string) (*Object,
 	metadata := make(map[string]string)
 	for k, v := range resp.Metadata {
 		if v != nil {
-			metadata[k] = *v
+			metadata[normalizeUserMetadataKey(k)] = *v
 		}
 	}
 
@@ -942,7 +942,7 @@ func (s *S3Backend) PutObject(ctx context.Context, bucket, key string, reader io
 			if strings.HasPrefix(k, "x-amz-server-side-encryption") {
 				kmsHeaders[k] = v
 			} else {
-				input.Metadata[k] = aws.String(v)
+				input.Metadata[stripUserMetadataPrefix(k)] = aws.String(v)
 			}
 		}
 	}
@@ -1050,7 +1050,7 @@ func (s *S3Backend) HeadObject(ctx context.Context, bucket, key string) (*Object
 	metadata := make(map[string]string)
 	for k, v := range resp.Metadata {
 		if v != nil {
-			metadata[k] = *v
+			metadata[normalizeUserMetadataKey(k)] = *v
 		}
 	}
 
@@ -1132,7 +1132,7 @@ func (s *S3Backend) InitiateMultipartUpload(ctx context.Context, bucket, key str
 	if len(metadata) > 0 {
 		input.Metadata = make(map[string]*string)
 		for k, v := range metadata {
-			input.Metadata[k] = aws.String(v)
+			input.Metadata[stripUserMetadataPrefix(k)] = aws.String(v)
 		}
 	}
 
@@ -1427,7 +1427,7 @@ func (s *S3Backend) putObjectMultipartStreaming(ctx context.Context, virtualBuck
 	if len(metadata) > 0 {
 		input.Metadata = make(map[string]*string)
 		for k, v := range metadata {
-			input.Metadata[k] = aws.String(v)
+			input.Metadata[stripUserMetadataPrefix(k)] = aws.String(v)
 		}
 	}
 
@@ -1541,7 +1541,7 @@ func (s *S3Backend) putObjectMultipart(ctx context.Context, virtualBucket, realB
 			if strings.HasPrefix(k, "x-amz-server-side-encryption") {
 				kmsHeaders[k] = v
 			} else {
-				input.Metadata[k] = aws.String(v)
+				input.Metadata[stripUserMetadataPrefix(k)] = aws.String(v)
 			}
 		}
 	}
@@ -2066,4 +2066,26 @@ func (s *S3Backend) ListDeletedObjects(ctx context.Context, bucket, prefix, mark
 // RestoreObject is not implemented for S3 backend
 func (s *S3Backend) RestoreObject(ctx context.Context, bucket, key, versionID string) error {
 	return fmt.Errorf("soft delete restore is not implemented for S3 backend")
+}
+
+// stripUserMetadataPrefix removes a leading "x-amz-meta-" (case-insensitive)
+// from a metadata key. The AWS SDK adds this prefix automatically when the
+// request is built, so passing already-prefixed keys produces a doubled prefix
+// on the wire. Callers that store metadata with the prefix (for backend-agnostic
+// reasons) round-trip correctly when this is stripped on write and re-added on
+// read.
+func stripUserMetadataPrefix(k string) string {
+	const p = "x-amz-meta-"
+	if len(k) >= len(p) && strings.EqualFold(k[:len(p)], p) {
+		return k[len(p):]
+	}
+	return k
+}
+
+// normalizeUserMetadataKey re-prefixes a metadata key returned by the AWS SDK
+// (which strips "x-amz-meta-" on the read path) and lowercases the result so
+// callers can do case-sensitive map lookups against well-known keys like
+// types.MetadataKeyAlgorithm.
+func normalizeUserMetadataKey(k string) string {
+	return "x-amz-meta-" + strings.ToLower(k)
 }

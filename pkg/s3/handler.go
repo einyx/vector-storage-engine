@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -48,6 +49,14 @@ var (
 	}
 )
 
+// MalwareScanner optionally scans object uploads before they reach storage (e.g. VirusTotal).
+type MalwareScanner interface {
+	IsEnabled() bool
+	CanBufferScanForUpload(size int64) bool
+	ScanReader(ctx context.Context, reader io.Reader, filename string, size int64) (*virustotal.ScanResult, error)
+	ShouldBlockUpload(result *virustotal.ScanResult) bool
+}
+
 // Handler represents the S3-compatible HTTP handler
 type Handler struct {
 	storage  storage.Backend
@@ -55,7 +64,7 @@ type Handler struct {
 	config   config.S3Config
 	router   *mux.Router
 	chunking config.ChunkingConfig
-	scanner  *virustotal.Scanner
+	scanner  MalwareScanner
 }
 
 // NewHandler creates a new S3 handler instance
@@ -73,8 +82,8 @@ func NewHandler(storage storage.Backend, auth auth.Provider, cfg config.S3Config
 	return h
 }
 
-// SetScanner sets the VirusTotal scanner for the handler
-func (h *Handler) SetScanner(scanner *virustotal.Scanner) {
+// SetScanner configures upload malware scanning (pass nil to disable).
+func (h *Handler) SetScanner(scanner MalwareScanner) {
 	h.scanner = scanner
 }
 

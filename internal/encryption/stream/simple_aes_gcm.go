@@ -7,11 +7,19 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 
 	"github.com/prysmsh/warp-storage-engine/internal/encryption/types"
+)
+
+const (
+	// Plaintext per AES-GCM chunk when streaming (large objects / unknown size).
+	aesChunkPlaintextMax = 256 << 10
+	maxSealedChunkBytes  = aesChunkPlaintextMax + 512 // ciphertext + tag + slack
 )
 
 // SimpleAESGCMEncryptor implements AES-256-GCM encryption with a simpler approach
@@ -29,15 +37,110 @@ func NewSimpleAESGCMEncryptor(keyProvider types.KeyProvider) *SimpleAESGCMEncryp
 	}
 }
 
+func writeAESChunk(w io.Writer, gcm cipher.AEAD, plain []byte) error {
+	if len(plain) == 0 {
+		return nil
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	sealed := gcm.Seal(nil, nonce, plain, nil)
+	if len(sealed) > maxSealedChunkBytes {
+		return fmt.Errorf("sealed chunk exceeds limit")
+	}
+	hdr := make([]byte, 2+len(nonce)+4)
+	binary.BigEndian.PutUint16(hdr[0:2], uint16(len(nonce)))
+	copy(hdr[2:2+len(nonce)], nonce)
+	binary.BigEndian.PutUint32(hdr[2+len(nonce):6+len(nonce)], uint32(len(sealed)))
+	if _, err := w.Write(hdr); err != nil {
+		return err
+	}
+	_, err := w.Write(sealed)
+	return err
+}
+
+func encryptChunksToPipe(reader io.Reader, gcm cipher.AEAD, pw *io.PipeWriter) {
+	go func() {
+		defer pw.Close()
+		buf := make([]byte, aesChunkPlaintextMax)
+		for {
+			n, err := reader.Read(buf)
+			if n > 0 {
+				if werr := writeAESChunk(pw, gcm, buf[:n]); werr != nil {
+					_ = pw.CloseWithError(werr)
+					return
+				}
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+	}()
+}
+
+type aesChunkDecryptReader struct {
+	r        io.Reader
+	gcm      cipher.AEAD
+	leftover []byte
+}
+
+func readOneOpenedChunk(gcm cipher.AEAD, r io.Reader) ([]byte, error) {
+	var nlenBuf [2]byte
+	if _, err := io.ReadFull(r, nlenBuf[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, io.EOF
+		}
+		return nil, err
+	}
+	nlen := int(binary.BigEndian.Uint16(nlenBuf[:]))
+	if nlen != gcm.NonceSize() {
+		return nil, fmt.Errorf("invalid chunk nonce length %d", nlen)
+	}
+	nonce := make([]byte, nlen)
+	if _, err := io.ReadFull(r, nonce); err != nil {
+		return nil, err
+	}
+	var clenBuf [4]byte
+	if _, err := io.ReadFull(r, clenBuf[:]); err != nil {
+		return nil, err
+	}
+	clen := int(binary.BigEndian.Uint32(clenBuf[:]))
+	if clen <= 0 || clen > maxSealedChunkBytes {
+		return nil, fmt.Errorf("invalid sealed chunk size %d", clen)
+	}
+	sealed := make([]byte, clen)
+	if _, err := io.ReadFull(r, sealed); err != nil {
+		return nil, err
+	}
+	return gcm.Open(nil, nonce, sealed, nil)
+}
+
+func (d *aesChunkDecryptReader) Read(p []byte) (int, error) {
+	if len(d.leftover) > 0 {
+		n := copy(p, d.leftover)
+		d.leftover = d.leftover[n:]
+		return n, nil
+	}
+	plain, err := readOneOpenedChunk(d.gcm, d.r)
+	if err != nil {
+		return 0, err
+	}
+	d.leftover = plain
+	return d.Read(p)
+}
+
 // Encrypt wraps a reader with AES-GCM encryption
 func (e *SimpleAESGCMEncryptor) Encrypt(ctx context.Context, reader io.Reader, size int64) (io.Reader, map[string]string, error) {
-	// Generate a new DEK
 	dek, encryptedDEK, err := e.keyProvider.GenerateDEK(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate DEK: %w", err)
 	}
 
-	// Create cipher
 	block, err := aes.NewCipher(dek)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
@@ -48,92 +151,68 @@ func (e *SimpleAESGCMEncryptor) Encrypt(ctx context.Context, reader io.Reader, s
 		return nil, nil, fmt.Errorf("failed to create GCM: %w", err)
 	}
 
-	// Generate nonce
+	useStreaming := size < 0 || size > e.maxMemorySize
+	if useStreaming {
+		sizeStr := "-1"
+		if size >= 0 {
+			sizeStr = strconv.FormatInt(size, 10)
+		}
+		meta := map[string]string{
+			types.MetadataKeyAlgorithm:       string(types.AlgorithmAES256GCM),
+			types.MetadataKeyID:              e.keyProvider.Name(),
+			types.MetadataKeyEncryptedDEK:    encryptedDEK,
+			types.MetadataKeyEncryptedSize:   sizeStr,
+			types.MetadataKeyStreamingFormat: types.StreamingFormatAESGCMChunkedV1,
+		}
+
+		pr, pw := io.Pipe()
+		encryptChunksToPipe(reader, gcm, pw)
+		return pr, meta, nil
+	}
+
 	nonce := make([]byte, gcm.NonceSize())
 	if _, randErr := rand.Read(nonce); randErr != nil {
 		return nil, nil, fmt.Errorf("failed to generate nonce: %w", randErr)
 	}
 
-	// For small files, encrypt in memory
-	if size >= 0 && size <= e.maxMemorySize {
-		// Read all data
-		data, readErr := io.ReadAll(reader)
-		if readErr != nil {
-			return nil, nil, fmt.Errorf("failed to read data: %w", readErr)
-		}
-
-		// Encrypt data (nonce is stored separately in metadata)
-		encrypted := gcm.Seal(nil, nonce, data, nil)
-
-		// Create metadata
-		metadata := map[string]string{
-			types.MetadataKeyAlgorithm:     string(types.AlgorithmAES256GCM),
-			types.MetadataKeyID:            e.keyProvider.Name(),
-			types.MetadataKeyEncryptedDEK:  encryptedDEK,
-			types.MetadataKeyNonce:         base64.StdEncoding.EncodeToString(nonce),
-			types.MetadataKeyEncryptedSize: strconv.FormatInt(int64(len(data)), 10),
-		}
-
-		return bytes.NewReader(encrypted), metadata, nil
+	data, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		return nil, nil, fmt.Errorf("failed to read data: %w", readErr)
 	}
 
-	// For large files, use streaming encryption
-	// Create metadata
+	encrypted := gcm.Seal(nil, nonce, data, nil)
 	metadata := map[string]string{
 		types.MetadataKeyAlgorithm:     string(types.AlgorithmAES256GCM),
 		types.MetadataKeyID:            e.keyProvider.Name(),
 		types.MetadataKeyEncryptedDEK:  encryptedDEK,
 		types.MetadataKeyNonce:         base64.StdEncoding.EncodeToString(nonce),
-		types.MetadataKeyEncryptedSize: strconv.FormatInt(size, 10),
+		types.MetadataKeyEncryptedSize: strconv.FormatInt(int64(len(data)), 10),
 	}
-
-	// For now, fall back to in-memory encryption for large files too
-	// TODO: Implement proper streaming encryption with chunking
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read data: %w", err)
-	}
-
-	// Encrypt data (nonce is stored separately in metadata)
-	encrypted := gcm.Seal(nil, nonce, data, nil)
 
 	return bytes.NewReader(encrypted), metadata, nil
 }
 
 // Decrypt wraps a reader with AES-GCM decryption
 func (e *SimpleAESGCMEncryptor) Decrypt(ctx context.Context, reader io.Reader, metadata map[string]string) (io.Reader, error) {
-	// Extract encryption metadata
 	encryptedDEK := metadata[types.MetadataKeyEncryptedDEK]
 	if encryptedDEK == "" {
 		return nil, fmt.Errorf("missing encrypted DEK in metadata")
 	}
 
-	nonceStr := metadata[types.MetadataKeyNonce]
-	if nonceStr == "" {
-		return nil, fmt.Errorf("missing nonce in metadata")
-	}
-
-	// Decode nonce
-	nonce, err := base64.StdEncoding.DecodeString(nonceStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode nonce: %w", err)
-	}
-
-	// Get original size if available
-	var originalSize int64 = -1
-	if sizeStr := metadata[types.MetadataKeyEncryptedSize]; sizeStr != "" {
-		if parsedSize, parseErr := strconv.ParseInt(sizeStr, 10, 64); parseErr == nil {
-			originalSize = parsedSize
+	streaming := metadata[types.MetadataKeyStreamingFormat]
+	var nonceStr string
+	if streaming != types.StreamingFormatAESGCMChunkedV1 {
+		nonceStr = metadata[types.MetadataKeyNonce]
+		if nonceStr == "" {
+			return nil, fmt.Errorf("missing nonce in metadata")
 		}
 	}
 
-	// Decrypt DEK
 	dek, err := e.keyProvider.DecryptDEK(ctx, encryptedDEK)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt DEK: %w", err)
 	}
 
-	// Create cipher
 	block, err := aes.NewCipher(dek)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cipher: %w", err)
@@ -144,16 +223,28 @@ func (e *SimpleAESGCMEncryptor) Decrypt(ctx context.Context, reader io.Reader, m
 		return nil, fmt.Errorf("failed to create GCM: %w", err)
 	}
 
-	// For small files, decrypt in memory
+	if streaming == types.StreamingFormatAESGCMChunkedV1 {
+		return &aesChunkDecryptReader{r: reader, gcm: gcm}, nil
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(nonceStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode nonce: %w", err)
+	}
+
+	var originalSize int64 = -1
+	if sizeStr := metadata[types.MetadataKeyEncryptedSize]; sizeStr != "" {
+		if parsedSize, parseErr := strconv.ParseInt(sizeStr, 10, 64); parseErr == nil {
+			originalSize = parsedSize
+		}
+	}
+
 	if originalSize >= 0 && originalSize <= e.maxMemorySize {
-		// Read all encrypted data
 		encrypted, readErr := io.ReadAll(reader)
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read encrypted data: %w", readErr)
 		}
 
-		// Nonce is stored in metadata, encrypted data doesn't include nonce
-		// Decrypt data directly
 		decrypted, decryptErr := gcm.Open(nil, nonce, encrypted, nil)
 		if decryptErr != nil {
 			return nil, fmt.Errorf("failed to decrypt data: %w", decryptErr)
@@ -162,15 +253,11 @@ func (e *SimpleAESGCMEncryptor) Decrypt(ctx context.Context, reader io.Reader, m
 		return bytes.NewReader(decrypted), nil
 	}
 
-	// For large files, use streaming decryption
-	// For now, fall back to in-memory decryption for large files too
-	// TODO: Implement proper streaming decryption with chunking
 	encrypted, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read encrypted data: %w", err)
 	}
 
-	// Nonce is stored in metadata, encrypted data doesn't include nonce
 	decrypted, err := gcm.Open(nil, nonce, encrypted, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt data: %w", err)
@@ -183,12 +270,3 @@ func (e *SimpleAESGCMEncryptor) Decrypt(ctx context.Context, reader io.Reader, m
 func (e *SimpleAESGCMEncryptor) Algorithm() types.Algorithm {
 	return types.AlgorithmAES256GCM
 }
-
-// TODO: Implement proper streaming encryption for very large files
-// For now, we fall back to in-memory encryption for all files
-//
-// A proper streaming implementation would:
-// 1. Use chunk-based encryption with separate nonces per chunk
-// 2. Include chunk headers with sequence numbers for integrity
-// 3. Support parallel processing of chunks
-// 4. Handle partial reads/writes correctly

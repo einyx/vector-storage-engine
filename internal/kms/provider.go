@@ -3,6 +3,8 @@ package kms
 import (
 	"context"
 	"fmt"
+
+	"github.com/prysmsh/warp-storage-engine/internal/metrics"
 )
 
 // Provider defines the interface for key management providers
@@ -54,18 +56,27 @@ type ProviderConfig struct {
 	Config map[string]interface{} `yaml:"config" json:"config"`
 }
 
-// NewProvider creates a new provider based on the configuration
-func NewProvider(ctx context.Context, cfg *ProviderConfig) (Provider, error) {
+// NewProvider creates a new provider based on the configuration. If m is non-nil,
+// the returned provider is wrapped with instrumentation that emits KMS metrics.
+func NewProvider(ctx context.Context, cfg *ProviderConfig, m *metrics.Metrics) (Provider, error) {
+	var (
+		inner Provider
+		err   error
+	)
 	switch cfg.Type {
 	case ProviderTypeAWSKMS:
-		return NewAWSKMSProvider(ctx, cfg.Config)
+		inner, err = NewAWSKMSProvider(ctx, cfg.Config)
 	case ProviderTypeAzureKV:
-		return NewAzureKeyVaultProvider(ctx, cfg.Config)
+		inner, err = NewAzureKeyVaultProvider(ctx, cfg.Config)
 	case ProviderTypeCustom:
-		return NewCustomProvider(ctx, cfg.Config)
+		inner, err = NewCustomProvider(ctx, cfg.Config)
 	case ProviderTypeLocal:
-		return NewLocalProvider(ctx, cfg.Config)
+		inner, err = NewLocalProvider(ctx, cfg.Config)
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", cfg.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return newInstrumentedProvider(inner, m), nil
 }

@@ -53,7 +53,7 @@ func TestEncryptedBackendIntegration(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	encManager, err := encryption.NewFromConfig(ctx, encConfig)
+	encManager, err := encryption.NewFromConfig(ctx, encConfig, nil)
 	require.NoError(t, err)
 
 	// Create encrypted backend
@@ -271,7 +271,7 @@ func TestEncryptedBackendWithDisabledEncryption(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	encManager, err := encryption.NewFromConfig(ctx, encConfig)
+	encManager, err := encryption.NewFromConfig(ctx, encConfig, nil)
 	require.NoError(t, err)
 
 	// Create encrypted backend (but encryption is disabled)

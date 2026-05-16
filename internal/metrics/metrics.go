@@ -56,6 +56,12 @@ type Metrics struct {
 	KMSDataKeysActive    prometheus.Gauge
 	KMSKeyValidations    *prometheus.CounterVec
 
+	// Object-layer encryption metrics
+	EncryptionObjectOps           *prometheus.CounterVec
+	EncryptionObjectBytes         *prometheus.CounterVec
+	EncryptionObjectDuration      *prometheus.HistogramVec
+	EncryptionDisabledPassthrough prometheus.Counter
+
 	// Authentication metrics
 	AuthAttemptsTotal    *prometheus.CounterVec
 	AuthFailuresTotal    *prometheus.CounterVec
@@ -291,6 +297,42 @@ func NewMetrics(namespace string) *Metrics {
 			[]string{"status"},
 		),
 
+		EncryptionObjectOps: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "encryption_object_ops_total",
+				Help:      "Total number of object-level encrypt/decrypt operations",
+			},
+			[]string{"op", "status"},
+		),
+
+		EncryptionObjectBytes: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "encryption_object_bytes_total",
+				Help:      "Total plaintext bytes processed by object-level encrypt/decrypt",
+			},
+			[]string{"op"},
+		),
+
+		EncryptionObjectDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Name:      "encryption_object_duration_seconds",
+				Help:      "Per-object encrypt/decrypt latency in seconds",
+				Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 12),
+			},
+			[]string{"op"},
+		),
+
+		EncryptionDisabledPassthrough: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "encryption_disabled_passthrough_total",
+				Help:      "Times the encryption manager fell through with encryption disabled or object not encrypted",
+			},
+		),
+
 		// Authentication metrics
 		AuthAttemptsTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -499,36 +541,57 @@ func (m *Metrics) IncConcurrencyLimit(action string) {
 
 // IncKMSOperation increments KMS operation counter
 func (m *Metrics) IncKMSOperation(operation, status string) {
+	if m == nil {
+		return
+	}
 	m.KMSOperationsTotal.WithLabelValues(operation, status).Inc()
 }
 
 // ObserveKMSOperationDuration observes KMS operation duration
 func (m *Metrics) ObserveKMSOperationDuration(operation string, duration time.Duration) {
+	if m == nil {
+		return
+	}
 	m.KMSOperationDuration.WithLabelValues(operation).Observe(duration.Seconds())
 }
 
 // IncKMSError increments KMS error counter
 func (m *Metrics) IncKMSError(operation, errorType string) {
+	if m == nil {
+		return
+	}
 	m.KMSErrors.WithLabelValues(operation, errorType).Inc()
 }
 
 // IncKMSCacheHit increments KMS cache hit counter
 func (m *Metrics) IncKMSCacheHit(cacheType string) {
+	if m == nil {
+		return
+	}
 	m.KMSCacheHits.WithLabelValues(cacheType).Inc()
 }
 
 // IncKMSCacheMiss increments KMS cache miss counter
 func (m *Metrics) IncKMSCacheMiss(cacheType string) {
+	if m == nil {
+		return
+	}
 	m.KMSCacheMisses.WithLabelValues(cacheType).Inc()
 }
 
 // SetKMSDataKeysActive sets the number of active data keys
 func (m *Metrics) SetKMSDataKeysActive(count float64) {
+	if m == nil {
+		return
+	}
 	m.KMSDataKeysActive.Set(count)
 }
 
 // IncKMSKeyValidation increments key validation counter
 func (m *Metrics) IncKMSKeyValidation(status string) {
+	if m == nil {
+		return
+	}
 	m.KMSKeyValidations.WithLabelValues(status).Inc()
 }
 
@@ -606,6 +669,41 @@ func (m *Metrics) IncConnectionsCreated(pool string) {
 // IncConnectionsDestroyed increments connections destroyed counter
 func (m *Metrics) IncConnectionsDestroyed(pool, reason string) {
 	m.ConnectionsDestroyed.WithLabelValues(pool, reason).Inc()
+}
+
+// Object-layer encryption metric helpers
+
+// IncEncryptionObjectOp increments the object-level encrypt/decrypt counter.
+// op is "encrypt" or "decrypt"; status is "success" or "error".
+func (m *Metrics) IncEncryptionObjectOp(op, status string) {
+	if m == nil {
+		return
+	}
+	m.EncryptionObjectOps.WithLabelValues(op, status).Inc()
+}
+
+// IncEncryptionObjectBytes adds to the byte counter for an op.
+func (m *Metrics) IncEncryptionObjectBytes(op string, n int64) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.EncryptionObjectBytes.WithLabelValues(op).Add(float64(n))
+}
+
+// ObserveEncryptionObjectDuration records duration for an encrypt or decrypt op.
+func (m *Metrics) ObserveEncryptionObjectDuration(op string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.EncryptionObjectDuration.WithLabelValues(op).Observe(d.Seconds())
+}
+
+// IncEncryptionDisabledPassthrough increments the passthrough sanity counter.
+func (m *Metrics) IncEncryptionDisabledPassthrough() {
+	if m == nil {
+		return
+	}
+	m.EncryptionDisabledPassthrough.Inc()
 }
 
 // GetStats returns current statistics

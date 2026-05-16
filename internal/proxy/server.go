@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -20,6 +23,7 @@ import (
 	"github.com/prysmsh/warp-storage-engine/internal/cache"
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 	"github.com/prysmsh/warp-storage-engine/internal/database"
+	"github.com/prysmsh/warp-storage-engine/internal/encryption"
 	"github.com/prysmsh/warp-storage-engine/internal/metrics"
 	"github.com/prysmsh/warp-storage-engine/internal/middleware"
 	"github.com/prysmsh/warp-storage-engine/internal/storage"
@@ -111,6 +115,28 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		}
 	}
 
+	// Build the metrics handle before encryption so KMS / encryption layers can
+	// record into the shared registry. NewMetrics is a sync.Once singleton, so
+	// reusing this handle below is fine.
+	metricsHandle := metrics.NewMetrics("foundation_storage_engine")
+
+	// Wrap with encryption if enabled. Encryption is the outermost storage
+	// layer so cache (if present) holds ciphertext, not plaintext.
+	if cfg.Encryption.Enabled {
+		ctx := context.Background()
+		encManager, err := encryption.NewFromConfig(ctx, &cfg.Encryption, metricsHandle)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create encryption manager: %w", err)
+		}
+		if err := validateEncryptionAtStartup(ctx, encManager); err != nil {
+			return nil, fmt.Errorf("encryption startup validation failed: %w", err)
+		}
+		storageBackend = storage.NewEncryptedBackend(storageBackend, encManager)
+		logrus.WithField("algorithm", cfg.Encryption.Algorithm).
+			WithField("key_provider", cfg.Encryption.KeyProvider).
+			Info("Storage encryption enabled")
+	}
+
 	// Create auth provider based on configuration
 	var authProvider auth.Provider
 	var db *database.DB
@@ -168,7 +194,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		storage: storageBackend,
 		auth:    authProvider,
 		router:  mux.NewRouter(),
-		metrics: metrics.NewMetrics("foundation_storage_engine"),
+		metrics: metricsHandle,
 		db:      db,
 	}
 
@@ -973,5 +999,42 @@ func (s *Server) Close() error {
 	}
 	
 	logrus.Info("Proxy server resources closed successfully")
+	return nil
+}
+
+// validateEncryptionAtStartup performs a small encrypt+decrypt round-trip to
+// verify the configured key provider is reachable and produces a usable DEK
+// before the listener accepts traffic. Refuses startup on any failure so the
+// engine cannot reach a healthy state with a broken encryption configuration.
+func validateEncryptionAtStartup(ctx context.Context, m *encryption.Manager) error {
+	if !m.IsEnabled() {
+		return nil
+	}
+
+	canary := []byte("warp-storage-engine-encryption-self-test")
+
+	encReader, encMeta, err := m.Encrypt(ctx, bytes.NewReader(canary), int64(len(canary)))
+	if err != nil {
+		return fmt.Errorf("self-test encrypt: %w", err)
+	}
+	encBytes, err := io.ReadAll(encReader)
+	if err != nil {
+		return fmt.Errorf("self-test encrypt read: %w", err)
+	}
+	if len(encMeta) == 0 {
+		return fmt.Errorf("self-test encrypt produced no metadata")
+	}
+
+	decReader, err := m.Decrypt(ctx, bytes.NewReader(encBytes), encMeta)
+	if err != nil {
+		return fmt.Errorf("self-test decrypt: %w", err)
+	}
+	decBytes, err := io.ReadAll(decReader)
+	if err != nil {
+		return fmt.Errorf("self-test decrypt read: %w", err)
+	}
+	if !bytes.Equal(decBytes, canary) {
+		return fmt.Errorf("self-test round-trip mismatch")
+	}
 	return nil
 }

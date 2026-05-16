@@ -156,6 +156,25 @@ func (e *EncryptedBackend) ListObjects(ctx context.Context, bucket, prefix, mark
 	return result, nil
 }
 
+// RestoreObject delegates to the underlying backend (no encryption metadata to manage)
+func (e *EncryptedBackend) RestoreObject(ctx context.Context, bucket, key, versionID string) error {
+	return e.backend.RestoreObject(ctx, bucket, key, versionID)
+}
+
+// ListDeletedObjects delegates to the underlying backend and cleans metadata
+func (e *EncryptedBackend) ListDeletedObjects(ctx context.Context, bucket, prefix, marker string, maxKeys int) (*ListObjectsResult, error) {
+	result, err := e.backend.ListDeletedObjects(ctx, bucket, prefix, marker, maxKeys)
+	if err != nil {
+		return nil, err
+	}
+	for i := range result.Contents {
+		if result.Contents[i].Metadata != nil {
+			e.processListItem(&result.Contents[i])
+		}
+	}
+	return result, nil
+}
+
 // ListObjectsWithDelimiter delegates to the underlying backend
 func (e *EncryptedBackend) ListObjectsWithDelimiter(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (*ListObjectsResult, error) {
 	result, err := e.backend.ListObjectsWithDelimiter(ctx, bucket, prefix, marker, delimiter, maxKeys)

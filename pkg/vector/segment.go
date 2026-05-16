@@ -132,7 +132,13 @@ type SealedSegment struct {
 }
 
 // SealSegment freezes a growing segment, builds indices, writes to backend.
-func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bucket string, hnswM, hnswEfConstruct int) (*SealedSegment, error) {
+// The optional quantization argument controls vector storage encoding;
+// QuantNone (or "") writes float32, QuantInt8 writes scalar-quantized int8.
+func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bucket string, hnswM, hnswEfConstruct int, quant ...Quantization) (*SealedSegment, error) {
+	q := QuantNone
+	if len(quant) > 0 {
+		q = quant[0]
+	}
 	points := gs.Points()
 	gsMeta := gs.Meta()
 
@@ -141,7 +147,15 @@ func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bu
 		return nil, err
 	}
 
-	hnsw := NewHNSWIndex(gsMeta.Dimensions, hnswM, hnswEfConstruct, distFunc)
+	var hnsw *HNSWIndex
+	var qpForVectors *quantParams
+	if q == QuantInt8 {
+		qp := computeQuantParams(points, gsMeta.Dimensions)
+		qpForVectors = &qp
+		hnsw = NewHNSWIndexQuantized(gsMeta.Dimensions, hnswM, hnswEfConstruct, distFunc, qp)
+	} else {
+		hnsw = NewHNSWIndex(gsMeta.Dimensions, hnswM, hnswEfConstruct, distFunc)
+	}
 	for _, p := range points {
 		hnsw.Insert(p.ID, p.Vector)
 	}
@@ -155,15 +169,16 @@ func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bu
 
 	now := time.Now()
 	meta := SegmentMeta{
-		ID:         gsMeta.ID,
-		Collection: gsMeta.Collection,
-		Shard:      gsMeta.Shard,
-		State:      SegmentIndexed,
-		PointCount: len(points),
-		Dimensions: gsMeta.Dimensions,
-		Distance:   gsMeta.Distance,
-		CreatedAt:  gsMeta.CreatedAt,
-		SealedAt:   &now,
+		ID:           gsMeta.ID,
+		Collection:   gsMeta.Collection,
+		Shard:        gsMeta.Shard,
+		State:        SegmentIndexed,
+		PointCount:   len(points),
+		Dimensions:   gsMeta.Dimensions,
+		Distance:     gsMeta.Distance,
+		Quantization: q,
+		CreatedAt:    gsMeta.CreatedAt,
+		SealedAt:     &now,
 	}
 
 	ss := &SealedSegment{
@@ -180,20 +195,30 @@ func SealSegment(ctx context.Context, gs *GrowingSegment, be storage.Backend, bu
 
 	prefix := segmentPath(meta.Collection, meta.Shard, meta.ID)
 
-	// vectors.bin
-	var vecBuf bytes.Buffer
-	binary.Write(&vecBuf, binary.LittleEndian, uint32(len(points)))
-	binary.Write(&vecBuf, binary.LittleEndian, uint32(meta.Dimensions))
-	for _, p := range points {
-		binary.Write(&vecBuf, binary.LittleEndian, p.ID)
-		for _, v := range p.Vector {
-			binary.Write(&vecBuf, binary.LittleEndian, math.Float32bits(v))
+	// vectors[_q].bin — encoding depends on meta.Quantization.
+	var vecData []byte
+	var vecKey string
+	if q == QuantInt8 {
+		// Reuse the same per-dim params as the in-memory HNSW so disk and
+		// RAM representations agree exactly.
+		vecData = encodeQuantizedVectors(points, *qpForVectors, meta.Dimensions)
+		vecKey = prefix + "/vectors_q.bin"
+	} else {
+		var vecBuf bytes.Buffer
+		binary.Write(&vecBuf, binary.LittleEndian, uint32(len(points)))
+		binary.Write(&vecBuf, binary.LittleEndian, uint32(meta.Dimensions))
+		for _, p := range points {
+			binary.Write(&vecBuf, binary.LittleEndian, p.ID)
+			for _, v := range p.Vector {
+				binary.Write(&vecBuf, binary.LittleEndian, math.Float32bits(v))
+			}
 		}
+		vecData = vecBuf.Bytes()
+		vecKey = prefix + "/vectors.bin"
 	}
-	vecData := vecBuf.Bytes()
 	meta.SizeBytes += int64(len(vecData))
-	if err := be.PutObject(ctx, bucket, prefix+"/vectors.bin", bytes.NewReader(vecData), int64(len(vecData)), nil); err != nil {
-		return nil, fmt.Errorf("write vectors.bin: %w", err)
+	if err := be.PutObject(ctx, bucket, vecKey, bytes.NewReader(vecData), int64(len(vecData)), nil); err != nil {
+		return nil, fmt.Errorf("write vectors: %w", err)
 	}
 
 	// hnsw.bin
@@ -261,16 +286,25 @@ func LoadSealedSegment(ctx context.Context, be storage.Backend, bucket, collecti
 		return nil, fmt.Errorf("unmarshal meta: %w", err)
 	}
 
-	vecObj, err := be.GetObject(ctx, bucket, prefix+"/vectors.bin")
+	vecKey := prefix + "/vectors.bin"
+	if meta.Quantization == QuantInt8 {
+		vecKey = prefix + "/vectors_q.bin"
+	}
+	vecObj, err := be.GetObject(ctx, bucket, vecKey)
 	if err != nil {
-		return nil, fmt.Errorf("read vectors.bin: %w", err)
+		return nil, fmt.Errorf("read vectors: %w", err)
 	}
 	vecData, err := io.ReadAll(vecObj.Body)
 	vecObj.Body.Close()
 	if err != nil {
 		return nil, err
 	}
-	points, err := decodeVectors(vecData, meta.Dimensions)
+	var points []Point
+	if meta.Quantization == QuantInt8 {
+		points, err = decodeQuantizedVectors(vecData, meta.Dimensions)
+	} else {
+		points, err = decodeVectors(vecData, meta.Dimensions)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("decode vectors: %w", err)
 	}
@@ -343,6 +377,30 @@ func (s *SealedSegment) Get(id PointID) (Point, bool) {
 
 func (s *SealedSegment) BitmapIndex() *BitmapIndex {
 	return s.bitmaps
+}
+
+// Points returns a copy of the segment's point slice. Used by compaction.
+func (s *SealedSegment) Points() []Point {
+	out := make([]Point, len(s.vectors))
+	copy(out, s.vectors)
+	return out
+}
+
+// DeleteFromBackend removes all object keys for this segment from the backend.
+func (s *SealedSegment) DeleteFromBackend(ctx context.Context, be storage.Backend, bucket string) error {
+	prefix := segmentPath(s.Meta.Collection, s.Meta.Shard, s.Meta.ID)
+	suffixes := []string{"/meta.json", "/hnsw.bin", "/payload.bin"}
+	if s.Meta.Quantization == QuantInt8 {
+		suffixes = append(suffixes, "/vectors_q.bin")
+	} else {
+		suffixes = append(suffixes, "/vectors.bin")
+	}
+	for _, suffix := range suffixes {
+		if err := be.DeleteObject(ctx, bucket, prefix+suffix); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- helpers ---

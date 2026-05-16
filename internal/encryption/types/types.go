@@ -50,9 +50,11 @@ type EncryptionMetadata struct {
 
 // MetadataKeys defines the keys used in object metadata
 const (
-	MetadataKeyAlgorithm     = "x-amz-meta-encryption-algorithm"
-	MetadataKeyID            = "x-amz-meta-encryption-key-id"
-	MetadataKeyEncryptedDEK  = "x-amz-meta-encryption-dek"
-	MetadataKeyNonce         = "x-amz-meta-encryption-nonce"
-	MetadataKeyEncryptedSize = "x-amz-meta-encrypted-size"
+	MetadataKeyAlgorithm           = "x-amz-meta-encryption-algorithm"
+	MetadataKeyID                  = "x-amz-meta-encryption-key-id"
+	MetadataKeyEncryptedDEK        = "x-amz-meta-encryption-dek"
+	MetadataKeyNonce               = "x-amz-meta-encryption-nonce"
+	MetadataKeyEncryptedSize       = "x-amz-meta-encrypted-size"
+	MetadataKeyStreamingFormat     = "x-amz-meta-encryption-stream-format"
+	StreamingFormatAESGCMChunkedV1 = "aes-gcm-chunked-v1"
 )

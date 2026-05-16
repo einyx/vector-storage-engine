@@ -76,7 +76,7 @@ func New(ctx context.Context, cfg *Config) (*Manager, error) {
 		client:       client,
 		config:       cfg,
 		keyCache:     make(map[string]*KeyInfo),
-		dataKeyCache: NewDataKeyCache(cfg.DataKeyCacheTTL),
+		dataKeyCache: NewDataKeyCache(cfg.DataKeyCacheTTL, nil),
 	}
 
 	// Validate default key if specified

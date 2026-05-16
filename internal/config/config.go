@@ -13,22 +13,22 @@ import (
 
 // Config represents the main configuration structure for the S3 proxy
 type Config struct {
-	Server        ServerConfig        `mapstructure:"server"`
-	S3            S3Config            `mapstructure:"s3"`
-	Storage       StorageConfig       `mapstructure:"storage"`
-	Auth          AuthConfig          `mapstructure:"auth"`
-	Database      DatabaseConfig      `mapstructure:"database"`
-	Encryption    EncryptionConfig    `mapstructure:"encryption"`
-	Chunking      ChunkingConfig      `mapstructure:"chunking"`
-	UI            UIConfig            `mapstructure:"ui"`
-	Auth0         Auth0Config         `mapstructure:"auth0"`
-	VirusTotal    VirusTotalConfig    `mapstructure:"virustotal"`
-	ShareLinks    ShareLinksConfig    `mapstructure:"share_links"`
-	Monitoring    MonitoringConfig    `mapstructure:"monitoring"`
-	Sentry        SentryConfig        `mapstructure:"sentry"`
-	OPA           OPAConfig           `mapstructure:"opa"`
-	Multitenancy  MultitenancyConfig  `mapstructure:"multitenancy"`
-	OCI           OCIConfig           `mapstructure:"oci"`
+	Server       ServerConfig       `mapstructure:"server"`
+	S3           S3Config           `mapstructure:"s3"`
+	Storage      StorageConfig      `mapstructure:"storage"`
+	Auth         AuthConfig         `mapstructure:"auth"`
+	Database     DatabaseConfig     `mapstructure:"database"`
+	Encryption   EncryptionConfig   `mapstructure:"encryption"`
+	Chunking     ChunkingConfig     `mapstructure:"chunking"`
+	UI           UIConfig           `mapstructure:"ui"`
+	Auth0        Auth0Config        `mapstructure:"auth0"`
+	VirusTotal   VirusTotalConfig   `mapstructure:"virustotal"`
+	ShareLinks   ShareLinksConfig   `mapstructure:"share_links"`
+	Monitoring   MonitoringConfig   `mapstructure:"monitoring"`
+	Sentry       SentryConfig       `mapstructure:"sentry"`
+	OPA          OPAConfig          `mapstructure:"opa"`
+	Multitenancy MultitenancyConfig `mapstructure:"multitenancy"`
+	OCI          OCIConfig          `mapstructure:"oci"`
 }
 
 // OCIConfig contains configuration for the OCI Distribution registry frontend.
@@ -92,6 +92,7 @@ type Auth0Config struct {
 	Audience          string            `mapstructure:"audience" envconfig:"AUTH0_AUDIENCE"`
 	Scopes            []string          `mapstructure:"scopes" envconfig:"AUTH0_SCOPES" default:"openid,profile,email"`
 	JWTValidation     bool              `mapstructure:"jwt_validation" envconfig:"AUTH0_JWT_VALIDATION" default:"true"`
+	JWKSURL           string            `mapstructure:"jwks_url" envconfig:"AUTH0_JWKS_URL"`
 	PermissionMapping map[string]string `mapstructure:"permission_mapping"`
 	SessionTimeout    time.Duration     `mapstructure:"session_timeout" envconfig:"AUTH0_SESSION_TIMEOUT" default:"24h"`
 	TokenCacheTTL     time.Duration     `mapstructure:"token_cache_ttl" envconfig:"AUTH0_TOKEN_CACHE_TTL" default:"5m"`
@@ -504,7 +505,7 @@ type OPAConfig struct {
 
 // MultitenancyConfig contains multi-tenancy configuration
 type MultitenancyConfig struct {
-	Enabled               bool                   `mapstructure:"enabled" envconfig:"MT_ENABLED" default:"false"`
+	Enabled               bool                    `mapstructure:"enabled" envconfig:"MT_ENABLED" default:"false"`
 	DefaultPhysicalBucket string                  `mapstructure:"default_physical_bucket" envconfig:"MT_DEFAULT_PHYSICAL_BUCKET" default:"fse-storage"`
 	Vault                 *VaultMultiTenantConfig `mapstructure:"vault"`
 }

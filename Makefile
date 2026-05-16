@@ -1,4 +1,4 @@
-.PHONY: all build test clean security-check install-security-tools
+.PHONY: all build test test-vector clean security-check install-security-tools
 
 # Build variables
 BINARY_NAME=warp-storage-engine
@@ -12,6 +12,9 @@ build:
 
 test:
 	$(GO) test $(GOFLAGS) ./...
+
+test-vector:
+	$(GO) test $(GOFLAGS) -tags vector ./pkg/vector/...
 
 test-coverage:
 	$(GO) test $(GOFLAGS) ./... -coverprofile=coverage.out -covermode=atomic

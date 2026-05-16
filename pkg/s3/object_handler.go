@@ -31,6 +31,8 @@ func logStorageGetErr(logger *logrus.Entry, err error, msg string) {
 	}
 	logger.WithError(err).Error(msg)
 }
+// ErrMalwareUploadBlocked is returned when an upload fails configured malware policy.
+var ErrMalwareUploadBlocked = errors.New("upload rejected by malware scan")
 
 // handleObject handles object-level operations (GET, PUT, DELETE, HEAD, POST)
 func (h *Handler) handleObject(w http.ResponseWriter, r *http.Request) {
@@ -702,6 +704,21 @@ func (h *Handler) putObject(w http.ResponseWriter, r *http.Request, bucket, key 
 		"bodyType": fmt.Sprintf("%T", body),
 	}).Info("Processing upload request")
 
+	// Optional malware scan for uploads we can buffer within scanner policy limits.
+	if ms := h.scanner; ms != nil && ms.IsEnabled() && size >= 0 && ms.CanBufferScanForUpload(size) {
+		scanned, err := h.scanContent(ctx, body, key, size, logger, w)
+		if err != nil {
+			if errors.Is(err, ErrMalwareUploadBlocked) {
+				h.sendError(w, err, http.StatusBadRequest)
+				return
+			}
+			logger.WithError(err).Error("Malware scan failed")
+			h.sendError(w, fmt.Errorf("malware scan failed"), http.StatusBadGateway)
+			return
+		}
+		body = scanned.Body
+	}
+
 	// Store object
 	err := h.storage.PutObject(ctx, bucket, key, body, size, metadata)
 	if err != nil {
@@ -954,12 +971,38 @@ type ScanContentResult struct {
 	Result interface{}
 }
 
-// scanContent scans content for viruses using VirusTotal
+// scanContent optionally scans buffered uploads via VirusTotal when a scanner is configured.
 func (h *Handler) scanContent(ctx context.Context, body io.Reader, key string, size int64, logger *logrus.Entry, w http.ResponseWriter) (*ScanContentResult, error) {
-	// For now, just return clean result
-	// TODO: Implement actual VirusTotal scanning
+	_ = w // reserved for future streaming responses
+
+	if h.scanner == nil || !h.scanner.IsEnabled() {
+		return &ScanContentResult{
+			Body:   body,
+			Result: nil,
+		}, nil
+	}
+
+	if !h.scanner.CanBufferScanForUpload(size) {
+		logger.WithFields(logrus.Fields{"key": key, "size": size}).Debug("Skipping VirusTotal scan (size limits or policy)")
+		return &ScanContentResult{Body: body, Result: nil}, nil
+	}
+
+	buf, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("read body for malware scan: %w", err)
+	}
+
+	result, err := h.scanner.ScanReader(ctx, bytes.NewReader(buf), key, int64(len(buf)))
+	if err != nil {
+		return nil, fmt.Errorf("virus scan: %w", err)
+	}
+
+	if h.scanner.ShouldBlockUpload(result) {
+		return nil, fmt.Errorf("%w: malware scan flagged threats for key %q", ErrMalwareUploadBlocked, key)
+	}
+
 	return &ScanContentResult{
-		Body:   body,
-		Result: nil, // No scan result available without real scanner
+		Body:   bytes.NewReader(buf),
+		Result: result,
 	}, nil
 }

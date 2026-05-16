@@ -1,5 +1,15 @@
 # Security Scanning Setup
 
+## License
+
+This repository is distributed under the **Business Source License 1.1**. Review [LICENSE](LICENSE) for the Additional Use Grant, Change Date, and Change License. Contributions are accepted under the same terms; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Reporting security vulnerabilities
+
+Report sensitive security issues privately (for example via GitHub Security Advisories or maintainer contact from the repository homepage) rather than in public issues. Include reproduction steps and affected versions when possible.
+
+---
+
 This project implements comprehensive security scanning using multiple tools to ensure code quality and security.
 
 ## Security Tools
