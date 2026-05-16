@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"regexp"
 	"strings"
 
 	"github.com/prysmsh/warp-storage-engine/internal/database"
@@ -11,20 +13,85 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// BucketMode controls how virtual buckets map to physical storage.
+//
+//	BucketModeShared (default): every virtual bucket points at the
+//	  same physical bucket (e.g. "warehouse") with a per-org prefix.
+//	  Cheap on Scaleway (no per-bucket overhead) but couples all
+//	  tenants' data into one container.
+//
+//	BucketModeDedicated: every virtual bucket gets its OWN physical
+//	  bucket on the upstream provider — name is deterministic
+//	  ("prysm-<orgSlug>-<virtual>"), prefix is empty. Each tenant's
+//	  data lives in its own Scaleway bucket; deletion + replication
+//	  + lifecycle policies can be configured per virtual bucket.
+//	  This is what the prysm-buckets feature uses.
+type BucketMode int
+
+const (
+	BucketModeShared BucketMode = iota
+	BucketModeDedicated
+)
+
 // TenantAwareBackend wraps a storage Backend and translates virtual buckets
 // to physical bucket+prefix based on the org's bucket mappings.
 type TenantAwareBackend struct {
 	backend Backend
 	db      database.UserStore
+	mode    BucketMode
 }
 
-// NewTenantAwareBackend creates a tenant-aware storage wrapper
+// NewTenantAwareBackend creates a tenant-aware storage wrapper.
+// Mode is read from WARP_BUCKET_MODE env at construction time:
+//
+//	"" or "shared"     → BucketModeShared (legacy default; preserves
+//	                     existing deployments where bucket_mapping.yaml
+//	                     declares the canonical physical bucket list)
+//	"dedicated"        → BucketModeDedicated (one Scaleway bucket per
+//	                     virtual bucket; the model prysm-buckets uses)
 func NewTenantAwareBackend(backend Backend, db database.UserStore) *TenantAwareBackend {
+	mode := BucketModeShared
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WARP_BUCKET_MODE"))) {
+	case "dedicated", "1to1", "1-to-1":
+		mode = BucketModeDedicated
+		logrus.Info("tenant storage: dedicated bucket mode (1:1 virtual → physical)")
+	default:
+		logrus.Info("tenant storage: shared bucket mode (default)")
+	}
 	return &TenantAwareBackend{
 		backend: backend,
 		db:      db,
+		mode:    mode,
 	}
 }
+
+// physicalBucketName returns the deterministic physical bucket name
+// for a (org, virtual) pair in dedicated mode. The shape is
+// "prysm-<orgSlug>-<virtualBucket>" with characters scrubbed to fit
+// S3's bucket naming rules (3-63 chars, lowercase, alphanumeric +
+// dashes, no leading/trailing dash, no consecutive dashes).
+func physicalBucketName(orgSlug, virtual string) string {
+	raw := "prysm-" + orgSlug + "-" + virtual
+	raw = strings.ToLower(raw)
+	raw = sanitizeBucketRegex.ReplaceAllString(raw, "-")
+	raw = collapseDashRegex.ReplaceAllString(raw, "-")
+	raw = strings.Trim(raw, "-")
+	if len(raw) > 63 {
+		raw = raw[:63]
+		raw = strings.TrimRight(raw, "-")
+	}
+	if len(raw) < 3 {
+		// Pad short names to satisfy the S3 minimum. Practically
+		// impossible given our prefix, but defensive.
+		raw = raw + "-bkt"
+	}
+	return raw
+}
+
+var (
+	sanitizeBucketRegex = regexp.MustCompile(`[^a-z0-9-]`)
+	collapseDashRegex   = regexp.MustCompile(`-{2,}`)
+)
 
 // resolveMapping looks up the physical bucket and prefix for a virtual bucket
 func (t *TenantAwareBackend) resolveMapping(ctx context.Context, virtualBucket string) (physicalBucket, prefix string, err error) {
@@ -87,23 +154,40 @@ func (t *TenantAwareBackend) ListBuckets(ctx context.Context) ([]BucketInfo, err
 	return buckets, nil
 }
 
-// CreateBucket creates a virtual bucket mapping (not a physical bucket)
+// CreateBucket provisions a virtual bucket. In shared mode it just
+// writes a DB row pointing at a pre-existing physical bucket with a
+// per-org prefix. In dedicated mode it ALSO calls the underlying
+// backend to create a new physical bucket on Scaleway / S3 / fs.
+//
+// Failure semantics:
+//
+//   - Physical create fails  → no DB row written. Caller can retry
+//     and the call is naturally idempotent (the underlying backend's
+//     CreateBucket no-ops on already-exists; the DB lookup short-
+//     circuits before the second create).
+//   - Physical create succeeds, DB write fails → orphan physical
+//     bucket. We log loudly so an operator can `aws s3 rb` it; we
+//     do NOT auto-delete because the user MAY have written to it
+//     in the brief window between the two ops, and silent data
+//     loss is worse than an orphan with a known name.
 func (t *TenantAwareBackend) CreateBucket(ctx context.Context, bucket string) error {
 	orgID := middleware.GetOrgID(ctx)
 	if orgID == "" {
 		return t.backend.CreateBucket(ctx, bucket)
 	}
 
-	// Check if mapping already exists
+	// Idempotency check: if a mapping already exists, return nil
+	// even if the caller is trying to "create" again. This matches
+	// S3's PUT-bucket behaviour for already-owned buckets and lets
+	// the prysm CLI's `buckets create foo` be replayed safely.
 	existing, err := t.db.GetBucketMapping(orgID, bucket)
 	if err != nil {
 		return fmt.Errorf("failed to check bucket mapping: %w", err)
 	}
 	if existing != nil {
-		return nil // Already exists
+		return nil
 	}
 
-	// Resolve org slug for the prefix
 	orgSlug := middleware.GetOrgSlug(ctx)
 	if orgSlug == "" {
 		org, err := t.db.GetOrgByID(orgID)
@@ -113,26 +197,106 @@ func (t *TenantAwareBackend) CreateBucket(ctx context.Context, bucket string) er
 		orgSlug = org.Slug
 	}
 
-	// For now, we need a default physical bucket — this should come from config
-	// The caller can override this by using the tenant API directly
+	var (
+		physicalBucket string
+		prefix         string
+	)
+	switch t.mode {
+	case BucketModeDedicated:
+		// 1:1 model — virtual gets its own Scaleway bucket. Name is
+		// deterministic so a destroyed-and-recreated mapping reuses
+		// the same physical bucket (preserving any data the user
+		// uploaded since first create).
+		physicalBucket = physicalBucketName(orgSlug, bucket)
+		prefix = "" // no per-org prefix needed; bucket itself isolates
+
+		if err := t.backend.CreateBucket(ctx, physicalBucket); err != nil {
+			return fmt.Errorf("create physical bucket %q: %w", physicalBucket, err)
+		}
+		logrus.WithFields(logrus.Fields{
+			"org":      orgSlug,
+			"virtual":  bucket,
+			"physical": physicalBucket,
+		}).Info("dedicated bucket created on backend")
+
+	default: // BucketModeShared
+		// Legacy: virtual maps to a same-named shared physical
+		// bucket (which the operator pre-provisions via config),
+		// with the org slug as the key prefix.
+		physicalBucket = bucket
+		prefix = orgSlug + "/"
+	}
+
 	mapping := &database.OrgBucketMapping{
 		OrgID:          orgID,
 		VirtualBucket:  bucket,
-		PhysicalBucket: bucket, // Default: same name
-		Prefix:         orgSlug + "/",
+		PhysicalBucket: physicalBucket,
+		Prefix:         prefix,
 	}
 
-	return t.db.CreateBucketMapping(mapping)
+	if err := t.db.CreateBucketMapping(mapping); err != nil {
+		// In dedicated mode, the physical bucket exists but we
+		// failed to record it. Log so an operator can clean up.
+		// We deliberately don't auto-delete: a concurrent writer
+		// could have already put data there.
+		if t.mode == BucketModeDedicated {
+			logrus.WithFields(logrus.Fields{
+				"org":      orgSlug,
+				"virtual":  bucket,
+				"physical": physicalBucket,
+				"error":    err,
+			}).Error("orphan physical bucket — DB row failed after backend create")
+		}
+		return fmt.Errorf("record bucket mapping: %w", err)
+	}
+	return nil
 }
 
-// DeleteBucket deletes the virtual bucket mapping
+// DeleteBucket removes the virtual bucket mapping. In dedicated mode
+// it ALSO deletes the underlying physical bucket — matching what the
+// operator would expect from `prysm buckets rm` ("destroy the bucket
+// and its contents"). The backend's DeleteBucket is responsible for
+// the empty-vs-non-empty semantics; for filesystem and S3 backends
+// alike, deleting a non-empty bucket fails by default.
 func (t *TenantAwareBackend) DeleteBucket(ctx context.Context, bucket string) error {
 	orgID := middleware.GetOrgID(ctx)
 	if orgID == "" {
 		return t.backend.DeleteBucket(ctx, bucket)
 	}
 
-	return t.db.DeleteBucketMapping(orgID, bucket)
+	mapping, err := t.db.GetBucketMapping(orgID, bucket)
+	if err != nil {
+		return fmt.Errorf("failed to look up mapping: %w", err)
+	}
+	if mapping == nil {
+		// Nothing to delete; treat as success (idempotent) so a
+		// retried delete after a partial failure doesn't error.
+		return nil
+	}
+
+	// Drop the DB row first. If the backend delete then fails, we
+	// have an orphan physical bucket but no virtual reference to
+	// it — easier for an operator to GC than the reverse (DB row
+	// pointing at a deleted physical bucket = phantom error on
+	// every read).
+	if err := t.db.DeleteBucketMapping(orgID, bucket); err != nil {
+		return fmt.Errorf("delete mapping: %w", err)
+	}
+
+	// Only delete the physical bucket if we own it (dedicated mode).
+	// In shared mode the physical bucket is operator-managed and
+	// holds other tenants' prefixes — must not touch.
+	if t.mode == BucketModeDedicated {
+		if err := t.backend.DeleteBucket(ctx, mapping.PhysicalBucket); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"physical": mapping.PhysicalBucket,
+				"error":    err,
+			}).Warn("dedicated bucket: backend delete failed (mapping already removed)")
+			return fmt.Errorf("delete physical bucket %q: %w", mapping.PhysicalBucket, err)
+		}
+	}
+
+	return nil
 }
 
 // BucketExists checks if the virtual bucket mapping exists

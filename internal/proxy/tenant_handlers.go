@@ -16,6 +16,7 @@ import (
 	"github.com/prysmsh/warp-storage-engine/internal/auth"
 	"github.com/prysmsh/warp-storage-engine/internal/database"
 	"github.com/prysmsh/warp-storage-engine/internal/middleware"
+	"github.com/prysmsh/warp-storage-engine/internal/storage"
 )
 
 // TenantHandlers provides HTTP handlers for org/user/bucket management
@@ -23,9 +24,22 @@ type TenantHandlers struct {
 	db            database.UserStore
 	vaultProvider *auth.VaultMultiUserProvider
 	defaultBucket string
+	// storage is the underlying backend used for dedicated-mode
+	// bucket creation/deletion. Optional: when nil, the handler
+	// behaves in shared mode regardless of WARP_BUCKET_MODE.
+	// Wired in NewTenantHandlersWithStorage; the legacy
+	// NewTenantHandlers is preserved for backward compatibility.
+	storage storage.Backend
+	// dedicatedMode mirrors the WARP_BUCKET_MODE env so the
+	// handler can derive a deterministic physical name when the
+	// caller doesn't provide one.
+	dedicatedMode bool
 }
 
-// NewTenantHandlers creates a new TenantHandlers instance
+// NewTenantHandlers creates a new TenantHandlers instance.
+// Backward-compatible signature: shared mode only (no physical
+// bucket creation). For dedicated-mode support call
+// NewTenantHandlersWithStorage instead.
 func NewTenantHandlers(db database.UserStore, vaultProvider *auth.VaultMultiUserProvider, defaultBucket string) *TenantHandlers {
 	return &TenantHandlers{
 		db:            db,
@@ -34,7 +48,66 @@ func NewTenantHandlers(db database.UserStore, vaultProvider *auth.VaultMultiUser
 	}
 }
 
+// NewTenantHandlersWithStorage wires the backend so dedicated-mode
+// CreateBucketMappingHandler can provision a real Scaleway/S3
+// bucket per virtual name.
+func NewTenantHandlersWithStorage(db database.UserStore, vaultProvider *auth.VaultMultiUserProvider, defaultBucket string, backend storage.Backend, dedicated bool) *TenantHandlers {
+	return &TenantHandlers{
+		db:            db,
+		vaultProvider: vaultProvider,
+		defaultBucket: defaultBucket,
+		storage:       backend,
+		dedicatedMode: dedicated,
+	}
+}
+
 var slugRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
+
+// resolveOrCreateOrg returns the org for slug, creating it on demand
+// when the caller is admin-trusted (i.e. came in via the service-
+// token bypass with is_admin=true). This is what makes the proxy
+// from prysm-backend "just work" the first time a user creates a
+// bucket — no separate "register your org with warp" step.
+//
+// For non-admin callers we preserve the historic 404 behaviour so
+// random AWS-V4-signed users can't auto-mint org rows by guessing
+// slugs.
+func (h *TenantHandlers) resolveOrCreateOrg(r *http.Request, slug string) (*database.Organization, error) {
+	org, err := h.db.GetOrgBySlug(slug)
+	if err != nil {
+		return nil, err
+	}
+	if org != nil {
+		return org, nil
+	}
+	if !isRequestAdmin(r) {
+		return nil, nil
+	}
+	if !isValidSlug(slug) {
+		// Defence-in-depth: even admin can't mint malformed slugs
+		// because they'd corrupt the URL surface.
+		return nil, fmt.Errorf("invalid slug %q", slug)
+	}
+	newOrg := &database.Organization{
+		Name: slug, // operator can rename via UI later
+		Slug: slug,
+		// settings is JSONB in postgres — empty string fails the
+		// jsonb cast with "invalid input syntax for type json".
+		// Default to {} so an unconfigured org is still valid JSON.
+		Settings: "{}",
+	}
+	if err := h.db.CreateOrganization(newOrg); err != nil {
+		// Race: a parallel request may have created it. Re-fetch
+		// and accept whatever the canonical row is.
+		existing, gerr := h.db.GetOrgBySlug(slug)
+		if gerr == nil && existing != nil {
+			return existing, nil
+		}
+		return nil, fmt.Errorf("auto-create org %q: %w", slug, err)
+	}
+	logrus.WithField("slug", slug).Info("auto-created org for admin-trusted request")
+	return newOrg, nil
+}
 
 func isValidSlug(s string) bool {
 	if len(s) < 2 || len(s) > 100 {
@@ -310,8 +383,12 @@ func (h *TenantHandlers) RemoveUserFromOrgHandler(w http.ResponseWriter, r *http
 func (h *TenantHandlers) CreateBucketMappingHandler(w http.ResponseWriter, r *http.Request) {
 	slug := mux.Vars(r)["slug"]
 
-	org, err := h.db.GetOrgBySlug(slug)
-	if err != nil || org == nil {
+	org, err := h.resolveOrCreateOrg(r, slug)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if org == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Organization not found"})
 		return
 	}
@@ -337,14 +414,45 @@ func (h *TenantHandlers) CreateBucketMappingHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
-	physicalBucket := req.PhysicalBucket
-	if physicalBucket == "" {
-		physicalBucket = h.defaultBucket
-	}
-
-	prefix := req.Prefix
-	if prefix == "" {
-		prefix = slug + "/"
+	// Resolve physical name + prefix per current mode.
+	//
+	// Dedicated mode: ignore caller-supplied physical/prefix —
+	// the server picks a deterministic name and provisions a fresh
+	// physical bucket on the storage backend. This is what
+	// prysm-buckets uses for the 1:1 model.
+	//
+	// Shared mode: honor the caller's hint (or default to the
+	// shared physical bucket); namespace via per-org prefix.
+	var (
+		physicalBucket string
+		prefix         string
+	)
+	if h.dedicatedMode && h.storage != nil {
+		physicalBucket = derivedPhysicalBucketName(slug, req.VirtualBucket)
+		prefix = ""
+		// Provision the underlying bucket FIRST. Failure here
+		// means no DB row written, which keeps the caller's
+		// retry idempotent.
+		if err := h.storage.CreateBucket(r.Context(), physicalBucket); err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"org":      slug,
+				"virtual":  req.VirtualBucket,
+				"physical": physicalBucket,
+			}).Error("dedicated bucket: backend create failed")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "Failed to provision physical bucket: " + err.Error(),
+			})
+			return
+		}
+	} else {
+		physicalBucket = req.PhysicalBucket
+		if physicalBucket == "" {
+			physicalBucket = h.defaultBucket
+		}
+		prefix = req.Prefix
+		if prefix == "" {
+			prefix = slug + "/"
+		}
 	}
 
 	mapping := &database.OrgBucketMapping{
@@ -356,6 +464,11 @@ func (h *TenantHandlers) CreateBucketMappingHandler(w http.ResponseWriter, r *ht
 
 	if err := h.db.CreateBucketMapping(mapping); err != nil {
 		logrus.WithError(err).Error("Failed to create bucket mapping")
+		// Orphan-bucket recovery: in dedicated mode the physical
+		// bucket exists but no DB row points at it. Logged loudly
+		// above (in the storage layer's Error path); operator GC
+		// is the recovery vehicle. Don't auto-delete here — a
+		// concurrent writer may have already touched it.
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create bucket mapping"})
 		return
 	}
@@ -365,9 +478,47 @@ func (h *TenantHandlers) CreateBucketMappingHandler(w http.ResponseWriter, r *ht
 		"virtual_bucket":  req.VirtualBucket,
 		"physical_bucket": physicalBucket,
 		"prefix":          prefix,
+		"mode":            modeName(h.dedicatedMode),
 	}).Info("Bucket mapping created")
 
 	writeJSON(w, http.StatusCreated, mapping)
+}
+
+func modeName(dedicated bool) string {
+	if dedicated {
+		return "dedicated"
+	}
+	return "shared"
+}
+
+// derivedPhysicalBucketName mirrors the storage-layer helper of the
+// same intent. Duplicated here (rather than imported) to keep
+// proxy → storage as a one-way dependency. If we ever extract a
+// shared util package the duplication should collapse.
+func derivedPhysicalBucketName(orgSlug, virtual string) string {
+	raw := strings.ToLower("prysm-" + orgSlug + "-" + virtual)
+	out := make([]byte, 0, len(raw))
+	prevDash := false
+	for _, r := range raw {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			out = append(out, byte(r))
+			prevDash = false
+		default:
+			if !prevDash {
+				out = append(out, '-')
+				prevDash = true
+			}
+		}
+	}
+	s := strings.Trim(string(out), "-")
+	if len(s) > 63 {
+		s = strings.TrimRight(s[:63], "-")
+	}
+	if len(s) < 3 {
+		s = s + "-bkt"
+	}
+	return s
 }
 
 // ListBucketMappingsHandler lists bucket mappings for an org
@@ -375,8 +526,17 @@ func (h *TenantHandlers) CreateBucketMappingHandler(w http.ResponseWriter, r *ht
 func (h *TenantHandlers) ListBucketMappingsHandler(w http.ResponseWriter, r *http.Request) {
 	slug := mux.Vars(r)["slug"]
 
-	org, err := h.db.GetOrgBySlug(slug)
-	if err != nil || org == nil {
+	// Auto-create on admin reads too — first-time visitors to the
+	// dashboard's Storage tab hit GET /buckets before they've ever
+	// created one. Returning a 404 there would surface as the
+	// confusing "Couldn't load buckets" error in the UI; lazy-
+	// creating the org row makes the empty state render cleanly.
+	org, err := h.resolveOrCreateOrg(r, slug)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if org == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Organization not found"})
 		return
 	}
@@ -405,6 +565,10 @@ func (h *TenantHandlers) DeleteBucketMappingHandler(w http.ResponseWriter, r *ht
 	slug := mux.Vars(r)["slug"]
 	bucketName := mux.Vars(r)["name"]
 
+	// Plain GetOrgBySlug here — we don't auto-create on delete
+	// because "delete a bucket from a not-yet-provisioned org" is
+	// almost certainly a typo or a stale URL, and silently
+	// succeeding would be misleading.
 	org, err := h.db.GetOrgBySlug(slug)
 	if err != nil || org == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Organization not found"})
@@ -416,9 +580,47 @@ func (h *TenantHandlers) DeleteBucketMappingHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Look up the mapping BEFORE deleting so we know the physical
+	// bucket to clean up (in dedicated mode). If the lookup fails or
+	// returns nothing, treat as success — idempotent delete is the
+	// cleanest UX for retried calls.
+	mapping, err := h.db.GetBucketMapping(org.ID, bucketName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to look up bucket mapping"})
+		return
+	}
+	if mapping == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Bucket mapping deleted"})
+		return
+	}
+
+	// DB row first, physical bucket second. If the backend delete
+	// fails afterwards we end up with a phantom physical bucket
+	// (no DB pointer) that an operator can GC; the reverse order
+	// would leave a DB row pointing at a deleted bucket which
+	// looks like silent corruption to the caller.
 	if err := h.db.DeleteBucketMapping(org.ID, bucketName); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete bucket mapping"})
 		return
+	}
+
+	if h.dedicatedMode && h.storage != nil {
+		if err := h.storage.DeleteBucket(r.Context(), mapping.PhysicalBucket); err != nil {
+			// Mapping is already gone — log and return a soft
+			// error so the caller knows the cleanup is partial.
+			// The dedicated bucket is named deterministically;
+			// the operator can locate and delete by hand using
+			// the prysm-<orgSlug>-<virtual> convention.
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"physical": mapping.PhysicalBucket,
+				"org":      slug,
+				"virtual":  bucketName,
+			}).Warn("dedicated bucket: backend delete failed (mapping already removed)")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "Mapping deleted but physical bucket cleanup failed: " + err.Error(),
+			})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Bucket mapping deleted"})

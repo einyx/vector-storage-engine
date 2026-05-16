@@ -38,10 +38,10 @@ type Organization struct {
 
 // OrgBucketMapping represents a virtual-to-physical bucket mapping for an org
 type OrgBucketMapping struct {
-	ID             string    `db:"id"`
-	OrgID          string    `db:"org_id"`
-	VirtualBucket  string    `db:"virtual_bucket"`
-	PhysicalBucket string    `db:"physical_bucket"`
-	Prefix         string    `db:"prefix"`
-	CreatedAt      time.Time `db:"created_at"`
+	ID             string    `db:"id" json:"id"`
+	OrgID          string    `db:"org_id" json:"org_id"`
+	VirtualBucket  string    `db:"virtual_bucket" json:"virtual_bucket"`
+	PhysicalBucket string    `db:"physical_bucket" json:"physical_bucket"`
+	Prefix         string    `db:"prefix" json:"prefix"`
+	CreatedAt      time.Time `db:"created_at" json:"created_at"`
 }

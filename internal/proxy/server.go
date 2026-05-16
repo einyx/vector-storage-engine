@@ -208,12 +208,28 @@ func NewServer(cfg *config.Config) (*Server, error) {
 			}
 		}
 
-		// If auth type is vault_multiuser, set up tenant handlers with vault provider
-		if vaultProvider, ok := s.auth.(*auth.VaultMultiUserProvider); ok {
-			s.tenantHandlers = NewTenantHandlers(s.db, vaultProvider, cfg.Multitenancy.DefaultPhysicalBucket)
-		} else {
-			s.tenantHandlers = NewTenantHandlers(s.db, nil, cfg.Multitenancy.DefaultPhysicalBucket)
+		// Decide the bucket mode once, here, so both the
+		// TenantAwareBackend wrapper and the tenant HTTP handlers
+		// agree. WARP_BUCKET_MODE=dedicated flips the 1:1 path
+		// (one physical Scaleway bucket per virtual). Anything
+		// else stays in shared mode for backwards compatibility
+		// with deployments that pre-declare physical buckets in
+		// config.yaml's bucket_mapping block.
+		dedicatedBucketMode := false
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("WARP_BUCKET_MODE"))) {
+		case "dedicated", "1to1", "1-to-1":
+			dedicatedBucketMode = true
 		}
+
+		// If auth type is vault_multiuser, set up tenant handlers with vault provider
+		var vp *auth.VaultMultiUserProvider
+		if vaultProvider, ok := s.auth.(*auth.VaultMultiUserProvider); ok {
+			vp = vaultProvider
+		}
+		s.tenantHandlers = NewTenantHandlersWithStorage(
+			s.db, vp, cfg.Multitenancy.DefaultPhysicalBucket,
+			s.storage, dedicatedBucketMode,
+		)
 
 		// Wrap storage backend with tenant-aware layer
 		s.storage = storage.NewTenantAwareBackend(s.storage, s.db)
@@ -228,8 +244,15 @@ func NewServer(cfg *config.Config) (*Server, error) {
 
 	s.setupRoutes()
 
-	// Apply middleware to all routes
+	// Apply middleware to all routes. Order matters: request-logger
+	// runs first so every request shows up in logs even if the
+	// service-token bypass elevates it; the bypass runs BEFORE the
+	// metrics middleware so admin-elevated requests still get
+	// counted in /metrics; auth providers (registered downstream
+	// inside per-route handlers) run after this and respect the
+	// `authenticated` flag the bypass sets.
 	s.router.Use(middleware.RequestLogger(middleware.DefaultLoggerConfig()))
+	s.router.Use(middleware.ServiceTokenMiddleware())
 	s.router.Use(s.metrics.Middleware())
 
 	// Apply Sentry middleware if enabled
