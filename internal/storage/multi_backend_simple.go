@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 )
@@ -11,14 +12,30 @@ import (
 // MultiBackendSimple provides routing to different storage backends based on bucket name
 type MultiBackendSimple struct {
 	backends map[string]Backend
-	routing  map[string]string // bucket -> backend name mapping
+	routing  map[string]string // bucket -> backend name mapping (exact match)
+
+	// s3TenantPrefix: buckets whose name starts with this prefix route
+	// to the "s3" backend even if they don't appear in `routing`.
+	// Lets prysm-backend create per-tenant physical buckets
+	// ("prysm-org-<N>-<name>") dynamically without us having to edit
+	// warp config on every new bucket. Empty = no prefix routing.
+	s3TenantPrefix string
+
+	// defaultBackend: name of the backend used when neither
+	// s3TenantPrefix nor `routing` matches. Picked as "filesystem"
+	// when present, else "s3", else "azure" (first non-empty in
+	// preference order). Prevents internal s2s callers (Loki, Vault)
+	// from getting "no backend found" for buckets that were never
+	// added to BucketConfigs but should still resolve to local disk.
+	defaultBackend string
 }
 
 // NewMultiBackendSimple creates a new multi-provider backend with simple routing
 func NewMultiBackendSimple(cfg *config.StorageConfig) (Backend, error) {
 	mb := &MultiBackendSimple{
-		backends: make(map[string]Backend),
-		routing:  make(map[string]string),
+		backends:       make(map[string]Backend),
+		routing:        make(map[string]string),
+		s3TenantPrefix: cfg.S3TenantPrefix,
 	}
 
 	// Initialize S3 backend if configured
@@ -72,17 +89,45 @@ func NewMultiBackendSimple(cfg *config.StorageConfig) (Backend, error) {
 		return nil, fmt.Errorf("no storage backends configured for multi-provider")
 	}
 
+	// Pick a default backend for any bucket that doesn't match exact
+	// routing or a tenant prefix. Preference: filesystem (cheapest,
+	// always local) → s3 → azure. This is the path Loki/Vault/etc.
+	// hit when their bucket names (loki-chunks, vault, …) aren't
+	// listed in BucketConfigs.
+	for _, name := range []string{"filesystem", "s3", "azure"} {
+		if _, ok := mb.backends[name]; ok {
+			mb.defaultBackend = name
+			break
+		}
+	}
+
 	return mb, nil
 }
 
-// getBackendForBucket returns the backend for a specific bucket
+// getBackendForBucket returns the backend for a specific bucket.
+// Resolution order:
+//  1. Tenant prefix match → S3 backend (dynamic per-customer buckets).
+//  2. Exact-match in `routing` (statically configured aliases).
+//  3. Default backend (filesystem when present) — covers internal
+//     s2s consumers (Loki, Vault) whose bucket names weren't pre-
+//     registered.
+//  4. Otherwise: error.
 func (m *MultiBackendSimple) getBackendForBucket(bucket string) (Backend, error) {
+	if m.s3TenantPrefix != "" && strings.HasPrefix(bucket, m.s3TenantPrefix) {
+		if backend, ok := m.backends["s3"]; ok {
+			return backend, nil
+		}
+	}
 	if backendName, ok := m.routing[bucket]; ok {
 		if backend, ok := m.backends[backendName]; ok {
 			return backend, nil
 		}
 	}
-	
+	if m.defaultBackend != "" {
+		if backend, ok := m.backends[m.defaultBackend]; ok {
+			return backend, nil
+		}
+	}
 	return nil, fmt.Errorf("no backend found for bucket: %s", bucket)
 }
 

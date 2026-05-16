@@ -104,6 +104,17 @@ type StorageConfig struct {
 	Azure      *AzureStorageConfig `mapstructure:"azure"`
 	S3         *S3StorageConfig    `mapstructure:"s3"`
 	FileSystem *FileSystemConfig   `mapstructure:"filesystem"`
+
+	// S3TenantPrefix routes any bucket whose name starts with this
+	// string to the S3 backend (rather than the local filesystem
+	// default) when Provider is "multi". Empty disables prefix
+	// routing — multi-backend falls back to its existing exact-match
+	// BucketConfigs map. The canonical use case is dedicated mode
+	// where prysm-backend creates physical buckets shaped
+	// "prysm-org-<N>-<virtual>" — setting this to "prysm-org-"
+	// sends every tenant-created bucket to Scaleway while internal
+	// buckets (loki-chunks, vault, etc.) stay on local disk.
+	S3TenantPrefix string `mapstructure:"s3_tenant_prefix" envconfig:"S3_TENANT_PREFIX"`
 }
 
 // AzureStorageConfig contains Azure Blob Storage specific settings
@@ -405,11 +416,23 @@ func validate(cfg *Config) error {
 			}
 		}
 		if cfg.Storage.Azure != nil {
-			hasBackend = true
-			// Validate Azure config if present
-			if cfg.Storage.Azure.AccountName == "" || cfg.Storage.Azure.AccountKey == "" {
-				if !cfg.Storage.Azure.UseSAS || cfg.Storage.Azure.SASToken == "" {
-					return fmt.Errorf("azure account name and key or SAS token are required in multi-provider mode")
+			// envconfig materializes the Azure pointer to apply the
+			// AZURE_USE_SAS=false default even when no AZURE_* env
+			// vars are set, so we get here with an all-zero Azure
+			// struct in setups that don't actually use Azure. Treat
+			// that as "not configured" rather than a misconfig.
+			azureZero := cfg.Storage.Azure.AccountName == "" &&
+				cfg.Storage.Azure.AccountKey == "" &&
+				cfg.Storage.Azure.Endpoint == "" &&
+				cfg.Storage.Azure.SASToken == "" &&
+				cfg.Storage.Azure.ContainerName == "" &&
+				!cfg.Storage.Azure.UseSAS
+			if !azureZero {
+				hasBackend = true
+				if cfg.Storage.Azure.AccountName == "" || cfg.Storage.Azure.AccountKey == "" {
+					if !cfg.Storage.Azure.UseSAS || cfg.Storage.Azure.SASToken == "" {
+						return fmt.Errorf("azure account name and key or SAS token are required in multi-provider mode")
+					}
 				}
 			}
 		}

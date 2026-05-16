@@ -16,6 +16,13 @@ type MultiBackend struct {
 	routing         map[string][]string // bucket -> list of backends that have this bucket
 	azureContainers map[string]string   // bucket alias -> real container name mapping for Azure
 	s3Buckets       map[string]string   // bucket alias -> real bucket name mapping for S3
+
+	// s3TenantPrefix: buckets whose name starts with this prefix route
+	// to the S3 backend even if they don't appear in the exact-match
+	// routing map. Lets prysm-backend create per-tenant physical
+	// buckets ("prysm-org-<N>-<name>") dynamically without us having
+	// to edit warp config on every new bucket. Empty = no prefix routing.
+	s3TenantPrefix string
 }
 
 // NewMultiBackend creates a new multi-provider backend
@@ -25,6 +32,7 @@ func NewMultiBackend(cfg *config.StorageConfig) (Backend, error) {
 		routing:         make(map[string][]string),
 		azureContainers: make(map[string]string),
 		s3Buckets:       make(map[string]string),
+		s3TenantPrefix:  cfg.S3TenantPrefix,
 	}
 
 	// Initialize S3 backend if configured
@@ -88,7 +96,21 @@ func NewMultiBackend(cfg *config.StorageConfig) (Backend, error) {
 // getBackendsForBucket returns all backends that have this bucket
 func (m *MultiBackend) getBackendsForBucket(bucket string) []Backend {
 	var backends []Backend
-	
+
+	// Prefix-routed tenant buckets go straight to S3. We check this
+	// before the exact-match routing map because the prefix case is
+	// the dynamic, runtime-created path; the routing map only has
+	// statically-configured names (loki-chunks, vault, etc.) and
+	// they won't (and shouldn't) match the tenant prefix.
+	if m.s3TenantPrefix != "" && strings.HasPrefix(bucket, m.s3TenantPrefix) {
+		if s3Backend, ok := m.backends["s3"]; ok {
+			return []Backend{s3Backend}
+		}
+		// Prefix configured but no S3 backend — fall through to
+		// default routing rather than NPE. The caller will get a
+		// "no backend available" error if everything fails.
+	}
+
 	if backendNames, ok := m.routing[bucket]; ok {
 		for _, backendName := range backendNames {
 			if backend, ok := m.backends[backendName]; ok {
