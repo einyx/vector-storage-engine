@@ -215,6 +215,78 @@ func TestFileSystemBackend_PutAndGetObject(t *testing.T) {
 	}
 }
 
+func TestFileSystemBackend_ObjectCanAlsoBePrefix(t *testing.T) {
+	backend, tempDir := setupFileSystemBackend(t)
+	defer func() {
+		if cleanErr := os.RemoveAll(tempDir); cleanErr != nil {
+			t.Logf("Failed to clean up temp dir: %v", cleanErr)
+		}
+	}()
+
+	ctx := context.Background()
+	bucket := "vault-bucket"
+	parentKey := "logical/root/metadata/parent"
+	childKey := parentKey + "/child"
+	parentContent := []byte("parent object")
+	childContent := []byte("child object")
+
+	if err := backend.CreateBucket(ctx, bucket); err != nil {
+		t.Fatalf("Failed to create bucket: %v", err)
+	}
+
+	if err := backend.PutObject(ctx, bucket, parentKey, bytes.NewReader(parentContent), int64(len(parentContent)), nil); err != nil {
+		t.Fatalf("PutObject(parent) error = %v", err)
+	}
+
+	if err := backend.PutObject(ctx, bucket, childKey, bytes.NewReader(childContent), int64(len(childContent)), nil); err != nil {
+		t.Fatalf("PutObject(child) error = %v", err)
+	}
+
+	parentObj, err := backend.GetObject(ctx, bucket, parentKey)
+	if err != nil {
+		t.Fatalf("GetObject(parent) error = %v", err)
+	}
+	defer func() {
+		if closeErr := parentObj.Body.Close(); closeErr != nil {
+			t.Logf("Failed to close parent body: %v", closeErr)
+		}
+	}()
+
+	gotParent, err := io.ReadAll(parentObj.Body)
+	if err != nil {
+		t.Fatalf("Failed to read parent object: %v", err)
+	}
+	if !bytes.Equal(gotParent, parentContent) {
+		t.Fatalf("parent content = %q, want %q", gotParent, parentContent)
+	}
+
+	childObj, err := backend.GetObject(ctx, bucket, childKey)
+	if err != nil {
+		t.Fatalf("GetObject(child) error = %v", err)
+	}
+	defer func() {
+		if closeErr := childObj.Body.Close(); closeErr != nil {
+			t.Logf("Failed to close child body: %v", closeErr)
+		}
+	}()
+
+	gotChild, err := io.ReadAll(childObj.Body)
+	if err != nil {
+		t.Fatalf("Failed to read child object: %v", err)
+	}
+	if !bytes.Equal(gotChild, childContent) {
+		t.Fatalf("child content = %q, want %q", gotChild, childContent)
+	}
+
+	head, err := backend.HeadObject(ctx, bucket, parentKey)
+	if err != nil {
+		t.Fatalf("HeadObject(parent) error = %v", err)
+	}
+	if head.Size != int64(len(parentContent)) {
+		t.Fatalf("HeadObject(parent) size = %d, want %d", head.Size, len(parentContent))
+	}
+}
+
 func TestFileSystemBackend_DeleteObject(t *testing.T) {
 	backend, tempDir := setupFileSystemBackend(t)
 	defer func() {

@@ -23,11 +23,84 @@ type FileSystemBackend struct {
 	bufferPool sync.Pool
 }
 
+const embeddedObjectFile = ".s3-object"
+
 // generateFileSystemETag creates a valid S3-compatible ETag from file info
 func generateFileSystemETag(info os.FileInfo) string {
 	data := fmt.Sprintf("file_%s_%d_%d", info.Name(), info.Size(), info.ModTime().UnixNano())
 	hash := md5.Sum([]byte(data)) //nolint:gosec // MD5 is required for S3 ETag compatibility
 	return hex.EncodeToString(hash[:])
+}
+
+func embeddedObjectPath(objectPath string) string {
+	return filepath.Join(objectPath, embeddedObjectFile)
+}
+
+func metadataPathForObject(storedPath string) string {
+	return storedPath + ".meta"
+}
+
+func (fs *FileSystemBackend) statStoredObject(objectPath string) (string, os.FileInfo, error) {
+	info, err := os.Stat(objectPath)
+	if err != nil {
+		return "", nil, err
+	}
+	if !info.IsDir() {
+		return objectPath, info, nil
+	}
+
+	embeddedPath := embeddedObjectPath(objectPath)
+	embeddedInfo, err := os.Stat(embeddedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return objectPath, info, nil
+		}
+		return "", nil, err
+	}
+	return embeddedPath, embeddedInfo, nil
+}
+
+func (fs *FileSystemBackend) convertFilePathToDirectory(objectPath string) error {
+	info, err := os.Stat(objectPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+
+	tmpDir := objectPath + ".dirtmp"
+	_ = os.RemoveAll(tmpDir)
+	if err := os.Mkdir(tmpDir, 0750); err != nil {
+		return fmt.Errorf("create temp dir for %s: %w", objectPath, err)
+	}
+
+	embeddedPath := embeddedObjectPath(tmpDir)
+	if err := os.Rename(objectPath, embeddedPath); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("move object into embedded slot: %w", err)
+	}
+
+	metadataPath := metadataPathForObject(objectPath)
+	if _, err := os.Stat(metadataPath); err == nil {
+		if err := os.Rename(metadataPath, metadataPathForObject(embeddedPath)); err != nil {
+			_ = os.Rename(embeddedPath, objectPath)
+			_ = os.RemoveAll(tmpDir)
+			return fmt.Errorf("move embedded metadata: %w", err)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		_ = os.Rename(embeddedPath, objectPath)
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("stat object metadata: %w", err)
+	}
+
+	if err := os.Rename(tmpDir, objectPath); err != nil {
+		_ = os.Rename(embeddedPath, objectPath)
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("replace file with directory: %w", err)
+	}
+
+	return nil
 }
 
 func validateBucketName(bucket string) error {
@@ -72,17 +145,17 @@ func (fs *FileSystemBackend) secureUploadPath(bucket, uploadID string) (string, 
 	if err := validateUploadID(uploadID); err != nil {
 		return "", fmt.Errorf("invalid upload ID: %w", err)
 	}
-	
+
 	fullPath := filepath.Join(fs.baseDir, bucket, ".uploads", uploadID)
-	
+
 	// Ensure the resulting path is still within the base directory
 	cleanPath := filepath.Clean(fullPath)
 	cleanBase := filepath.Clean(fs.baseDir)
-	
+
 	if !strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator)) && cleanPath != cleanBase {
 		return "", errors.New("path traversal detected")
 	}
-	
+
 	return cleanPath, nil
 }
 
@@ -287,22 +360,28 @@ func (fs *FileSystemBackend) GetObject(ctx context.Context, bucket, key string) 
 		return nil, fmt.Errorf("invalid path parameters: %w", err)
 	}
 
-	info, err := os.Stat(objectPath)
+	storedPath, info, err := fs.statStoredObject(objectPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrInvalid) {
+			return nil, fmt.Errorf("%w: %v", ErrObjectNotFound, err)
+		}
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "not a directory") {
 			return nil, fmt.Errorf("%w: %v", ErrObjectNotFound, err)
 		}
 		return nil, fmt.Errorf("stat object: %w", err)
 	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%w: directory key without trailing slash", ErrObjectNotFound)
+	}
 
-	file, err := os.Open(objectPath) //nolint:gosec // objectPath is controlled
+	file, err := os.Open(storedPath) //nolint:gosec // storedPath is controlled
 	if err != nil {
 		return nil, fmt.Errorf("failed to open object: %w", err)
 	}
 
 	// Load metadata from .meta file if it exists
 	metadata := make(map[string]string)
-	metadataPath := objectPath + ".meta"
+	metadataPath := metadataPathForObject(storedPath)
 	if metadataBytes, err := os.ReadFile(metadataPath); err == nil { //nolint:gosec // metadataPath is controlled
 		_ = json.Unmarshal(metadataBytes, &metadata)
 	}
@@ -359,11 +438,14 @@ func (fs *FileSystemBackend) ensureDirAll(dirPath string) error {
 		if info.IsDir() {
 			continue
 		}
-		// Path component exists as a file. Only replace if it's an empty file (0 bytes),
-		// which indicates an S3 directory marker. Non-empty files are real data and must
-		// not be replaced - return an error instead so the caller can handle it.
+		// Path component exists as a file. Promote non-empty files into directories
+		// that retain the original object payload in a hidden embedded file so the
+		// same key can coexist as both an object and a prefix, matching S3 behavior.
 		if info.Size() > 0 {
-			return fmt.Errorf("cannot create directory %s: path component exists as non-empty file (size %d bytes)", current, info.Size())
+			if err := fs.convertFilePathToDirectory(current); err != nil {
+				return fmt.Errorf("cannot create directory %s: %w", current, err)
+			}
+			continue
 		}
 		if err := os.Remove(current); err != nil {
 			return fmt.Errorf("failed to remove empty file blocking directory %s: %w", current, err)
@@ -413,16 +495,12 @@ func (fs *FileSystemBackend) PutObject(ctx context.Context, bucket, key string, 
 		return fmt.Errorf("failed to create object directory: %w", err)
 	}
 
-	// If the object path exists as a directory (e.g. we previously replaced a small
-	// file with a dir for nested writes, but Vault now writes a file at this key),
-	// remove it so we can create the file.
+	storedPath := objectPath
 	if info, err := os.Stat(objectPath); err == nil && info.IsDir() {
-		if err := os.RemoveAll(objectPath); err != nil {
-			return fmt.Errorf("failed to remove directory blocking object path: %w", err)
-		}
+		storedPath = embeddedObjectPath(objectPath)
 	}
 
-	file, err := os.Create(objectPath) //nolint:gosec // objectPath is controlled
+	file, err := os.Create(storedPath) //nolint:gosec // storedPath is controlled
 	if err != nil {
 		return fmt.Errorf("failed to create object file: %w", err)
 	}
@@ -448,7 +526,7 @@ func (fs *FileSystemBackend) PutObject(ctx context.Context, bucket, key string, 
 
 	// Save metadata to .meta file if provided
 	if len(metadata) > 0 {
-		metadataPath := objectPath + ".meta"
+		metadataPath := metadataPathForObject(storedPath)
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
 			return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -490,7 +568,19 @@ func (fs *FileSystemBackend) DeleteObject(ctx context.Context, bucket, key strin
 	}
 
 	// Regular file deletion
-	err = os.Remove(objectPath)
+	storedPath, info, err := fs.statStoredObject(objectPath)
+	if err != nil {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "not a directory") {
+			return nil
+		}
+		return err
+	}
+
+	if info.IsDir() {
+		return nil
+	}
+
+	err = os.Remove(storedPath)
 	if os.IsNotExist(err) {
 		return nil // S3 behavior: deleting non-existent object succeeds
 	}
@@ -499,7 +589,7 @@ func (fs *FileSystemBackend) DeleteObject(ctx context.Context, bucket, key strin
 	}
 
 	// Clean up metadata file if it exists
-	metadataPath := objectPath + ".meta"
+	metadataPath := metadataPathForObject(storedPath)
 	_ = os.Remove(metadataPath)
 
 	// Clean up empty parent directories after deleting the file
@@ -545,7 +635,7 @@ func (fs *FileSystemBackend) cleanupEmptyDirectories(bucket, dirPath string) {
 				_ = os.Remove(filepath.Join(fullDirPath, entry.Name()))
 			}
 		}
-		
+
 		// Remove only this empty directory — do NOT recurse to parents.
 		// Recursive cleanup was causing data loss when grandparent dirs held
 		// unrelated content (e.g. Iceberg metadata).
@@ -559,9 +649,9 @@ func (fs *FileSystemBackend) HeadObject(ctx context.Context, bucket, key string)
 		return nil, fmt.Errorf("invalid path parameters: %w", err)
 	}
 
-	info, err := os.Stat(objectPath)
+	storedPath, info, err := fs.statStoredObject(objectPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "not a directory") {
 			return nil, fmt.Errorf("%w: %v", ErrObjectNotFound, err)
 		}
 		return nil, fmt.Errorf("stat object: %w", err)
@@ -580,10 +670,10 @@ func (fs *FileSystemBackend) HeadObject(ctx context.Context, bucket, key string)
 		// For directories, metadata is stored inside the directory
 		metadataPath = filepath.Join(objectPath, ".meta")
 	} else {
-		// For files, metadata is stored alongside the file
-		metadataPath = objectPath + ".meta"
+		// For files, metadata is stored alongside the stored object payload.
+		metadataPath = metadataPathForObject(storedPath)
 	}
-	
+
 	if metadataBytes, err := os.ReadFile(metadataPath); err == nil { //nolint:gosec // metadataPath is controlled
 		_ = json.Unmarshal(metadataBytes, &metadata)
 	}
@@ -694,7 +784,7 @@ func (fs *FileSystemBackend) CompleteMultipartUpload(ctx context.Context, bucket
 	if err != nil {
 		return fmt.Errorf("invalid upload path parameters: %w", err)
 	}
-	
+
 	objectPath, err := fs.secureObjectPath(bucket, key)
 	if err != nil {
 		return fmt.Errorf("invalid object path parameters: %w", err)
@@ -705,7 +795,12 @@ func (fs *FileSystemBackend) CompleteMultipartUpload(ctx context.Context, bucket
 		return fmt.Errorf("failed to create object directory: %w", err)
 	}
 
-	file, err := os.Create(objectPath) //nolint:gosec // objectPath is controlled
+	storedPath := objectPath
+	if info, err := os.Stat(objectPath); err == nil && info.IsDir() {
+		storedPath = embeddedObjectPath(objectPath)
+	}
+
+	file, err := os.Create(storedPath) //nolint:gosec // storedPath is controlled
 	if err != nil {
 		return fmt.Errorf("failed to create object file: %w", err)
 	}
@@ -718,22 +813,22 @@ func (fs *FileSystemBackend) CompleteMultipartUpload(ctx context.Context, bucket
 		reader     io.ReadCloser
 		err        error
 	}
-	
+
 	// Channel for part readers
 	readerChan := make(chan partReader, maxConcurrentReads)
-	
+
 	// Start goroutine to open part files concurrently
 	go func() {
 		defer close(readerChan)
-		
+
 		// Process parts in batches
 		for i := 0; i < len(parts); i += maxConcurrentReads {
 			batch := parts[i:min(i+maxConcurrentReads, len(parts))]
-			
+
 			// Open files in parallel
 			readers := make([]partReader, len(batch))
 			var wg sync.WaitGroup
-			
+
 			for j, part := range batch {
 				wg.Add(1)
 				go func(idx int, p CompletedPart) {
@@ -747,9 +842,9 @@ func (fs *FileSystemBackend) CompleteMultipartUpload(ctx context.Context, bucket
 					}
 				}(j, part)
 			}
-			
+
 			wg.Wait()
-			
+
 			// Send readers in order
 			for _, r := range readers {
 				select {
@@ -760,19 +855,19 @@ func (fs *FileSystemBackend) CompleteMultipartUpload(ctx context.Context, bucket
 			}
 		}
 	}()
-	
+
 	// Write parts sequentially to maintain order
 	for reader := range readerChan {
 		if reader.err != nil {
 			return fmt.Errorf("failed to open part %d: %w", reader.partNumber, reader.err)
 		}
-		
+
 		bufPtr := fs.bufferPool.Get().(*[]byte)
 		buf := *bufPtr
 		_, err = io.CopyBuffer(file, reader.reader, buf)
 		_ = reader.reader.Close()
 		fs.bufferPool.Put(bufPtr)
-		
+
 		if err != nil {
 			return fmt.Errorf("failed to copy part %d: %w", reader.partNumber, err)
 		}
@@ -842,7 +937,6 @@ func (fs *FileSystemBackend) ListParts(ctx context.Context, bucket, key, uploadI
 	result.IsTruncated = count >= maxParts
 	return result, nil
 }
-
 
 // ListDeletedObjects is not implemented for filesystem backend
 func (f *FileSystemBackend) ListDeletedObjects(ctx context.Context, bucket, prefix, marker string, maxKeys int) (*ListObjectsResult, error) {
