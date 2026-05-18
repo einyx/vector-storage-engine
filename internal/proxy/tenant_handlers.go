@@ -568,8 +568,8 @@ func (h *TenantHandlers) ListBucketMappingsHandler(w http.ResponseWriter, r *htt
 //
 // Walks the backend with ListObjects pagination so 10k+ object buckets
 // don't blow up memory. Sizes come from S3 metadata, no body reads.
-// Errors on individual buckets are logged but don't fail the request —
-// a partial number is more useful for billing than a 500.
+// Any ListObjects failure aborts with 502 — partial counts would
+// silently under-bill, which is worse than skipping the tick.
 func (h *TenantHandlers) UsageHandler(w http.ResponseWriter, r *http.Request) {
 	slug := mux.Vars(r)["slug"]
 	org, err := h.resolveOrCreateOrg(r, slug)
@@ -597,9 +597,12 @@ func (h *TenantHandlers) UsageHandler(w http.ResponseWriter, r *http.Request) {
 	if h.storage == nil {
 		// Shared-mode deployments don't own physical buckets; size
 		// accounting would require a different model (per-prefix
-		// listing on the shared bucket). Return 0 rather than 503
-		// so the reconciler emits a real value.
-		writeJSON(w, http.StatusOK, map[string]any{"total_bytes": 0, "buckets": []any{}})
+		// listing on the shared bucket). Refuse rather than emit 0
+		// — a 0 from a misconfigured shared deployment would silently
+		// under-bill every org's storage_bytes meter.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "storage usage endpoint requires dedicated-mode backend",
+		})
 		return
 	}
 
@@ -612,14 +615,22 @@ func (h *TenantHandlers) UsageHandler(w http.ResponseWriter, r *http.Request) {
 		Buckets    []bucketUsage `json:"buckets"`
 	}{Buckets: make([]bucketUsage, 0, len(mappings))}
 
+	// Strict accounting: any ListObjects failure aborts the entire
+	// response. Returning a partial number would under-bill silently —
+	// the reconciler treats non-2xx as "skip this tick," which is the
+	// safe choice (next tick retries the full org).
 	for _, m := range mappings {
 		var total int64
 		marker := ""
 		for {
 			res, lerr := h.storage.ListObjects(r.Context(), m.PhysicalBucket, "", marker, 1000)
 			if lerr != nil {
-				// Partial number is more useful than a 500 for billing.
-				break
+				writeJSON(w, http.StatusBadGateway, map[string]string{
+					"error":  "ListObjects failed; refusing partial total",
+					"bucket": m.VirtualBucket,
+					"detail": lerr.Error(),
+				})
+				return
 			}
 			for _, obj := range res.Contents {
 				total += obj.Size
