@@ -471,6 +471,7 @@ func (s *Server) setupRoutes() {
 		s.router.HandleFunc("/api/orgs/{slug}/buckets", s.tenantHandlers.CreateBucketMappingHandler).Methods("POST")
 		s.router.HandleFunc("/api/orgs/{slug}/buckets", s.tenantHandlers.ListBucketMappingsHandler).Methods("GET")
 		s.router.HandleFunc("/api/orgs/{slug}/buckets/{name}", s.tenantHandlers.DeleteBucketMappingHandler).Methods("DELETE")
+		s.router.HandleFunc("/api/orgs/{slug}/usage", s.tenantHandlers.UsageHandler).Methods("GET")
 	}
 
 	// Register auth validation endpoint

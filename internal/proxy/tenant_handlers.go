@@ -559,6 +559,83 @@ func (h *TenantHandlers) ListBucketMappingsHandler(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, mappings)
 }
 
+// UsageHandler reports per-org storage usage in bytes.
+// GET /api/orgs/{slug}/usage
+//
+// Returns the sum of object sizes across every physical bucket mapped
+// to this org. Drives the billing inventory reconciler's
+// storage_bytes meter — see prysm-backend/inventory_reconciler.go.
+//
+// Walks the backend with ListObjects pagination so 10k+ object buckets
+// don't blow up memory. Sizes come from S3 metadata, no body reads.
+// Errors on individual buckets are logged but don't fail the request —
+// a partial number is more useful for billing than a 500.
+func (h *TenantHandlers) UsageHandler(w http.ResponseWriter, r *http.Request) {
+	slug := mux.Vars(r)["slug"]
+	org, err := h.resolveOrCreateOrg(r, slug)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if org == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Organization not found"})
+		return
+	}
+	if !isRequestAdmin(r) {
+		ctxOrgID := middleware.GetOrgID(r.Context())
+		if ctxOrgID != org.ID {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Access denied"})
+			return
+		}
+	}
+
+	mappings, err := h.db.GetBucketMappingsByOrgID(org.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list bucket mappings"})
+		return
+	}
+	if h.storage == nil {
+		// Shared-mode deployments don't own physical buckets; size
+		// accounting would require a different model (per-prefix
+		// listing on the shared bucket). Return 0 rather than 503
+		// so the reconciler emits a real value.
+		writeJSON(w, http.StatusOK, map[string]any{"total_bytes": 0, "buckets": []any{}})
+		return
+	}
+
+	type bucketUsage struct {
+		Name  string `json:"name"`
+		Bytes int64  `json:"bytes"`
+	}
+	out := struct {
+		TotalBytes int64         `json:"total_bytes"`
+		Buckets    []bucketUsage `json:"buckets"`
+	}{Buckets: make([]bucketUsage, 0, len(mappings))}
+
+	for _, m := range mappings {
+		var total int64
+		marker := ""
+		for {
+			res, lerr := h.storage.ListObjects(r.Context(), m.PhysicalBucket, "", marker, 1000)
+			if lerr != nil {
+				// Partial number is more useful than a 500 for billing.
+				break
+			}
+			for _, obj := range res.Contents {
+				total += obj.Size
+			}
+			if !res.IsTruncated {
+				break
+			}
+			marker = res.NextMarker
+		}
+		out.Buckets = append(out.Buckets, bucketUsage{Name: m.VirtualBucket, Bytes: total})
+		out.TotalBytes += total
+	}
+
+	writeJSON(w, http.StatusOK, out)
+}
+
 // DeleteBucketMappingHandler deletes a virtual bucket mapping
 // DELETE /api/orgs/{slug}/buckets/{name}
 func (h *TenantHandlers) DeleteBucketMappingHandler(w http.ResponseWriter, r *http.Request) {
