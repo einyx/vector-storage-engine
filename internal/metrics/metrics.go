@@ -93,7 +93,7 @@ type Metrics struct {
 // NewMetrics creates a new metrics instance (singleton to avoid duplicate registration)
 func NewMetrics(namespace string) *Metrics {
 	if namespace == "" {
-		namespace = "foundation_storage_engine"
+		namespace = "warp"
 	}
 
 	// Use singleton pattern to avoid duplicate registration in tests/benchmarks

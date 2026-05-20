@@ -29,36 +29,36 @@ func NewAuth0Metrics() *Auth0Metrics {
 	metricsOnce.Do(func() {
 		globalMetrics = &Auth0Metrics{
 			loginAttempts: prometheus.NewCounter(prometheus.CounterOpts{
-				Name: "foundation_storage_engine_auth0_login_attempts_total",
+				Name: "warp_auth0_login_attempts_total",
 				Help: "Total number of Auth0 login attempts",
 			}),
 			loginSuccesses: prometheus.NewCounter(prometheus.CounterOpts{
-				Name: "foundation_storage_engine_auth0_login_successes_total",
+				Name: "warp_auth0_login_successes_total",
 				Help: "Total number of successful Auth0 logins",
 			}),
 			loginFailures: prometheus.NewCounter(prometheus.CounterOpts{
-				Name: "foundation_storage_engine_auth0_login_failures_total",
+				Name: "warp_auth0_login_failures_total",
 				Help: "Total number of failed Auth0 logins",
 			}),
 			jwtValidations: prometheus.NewCounter(prometheus.CounterOpts{
-				Name: "foundation_storage_engine_auth0_jwt_validations_total",
+				Name: "warp_auth0_jwt_validations_total",
 				Help: "Total number of JWT token validations",
 			}),
 			jwtCacheHits: prometheus.NewCounter(prometheus.CounterOpts{
-				Name: "foundation_storage_engine_auth0_jwt_cache_hits_total",
+				Name: "warp_auth0_jwt_cache_hits_total",
 				Help: "Total number of JWT cache hits",
 			}),
 			jwtCacheMisses: prometheus.NewCounter(prometheus.CounterOpts{
-				Name: "foundation_storage_engine_auth0_jwt_cache_misses_total",
+				Name: "warp_auth0_jwt_cache_misses_total",
 				Help: "Total number of JWT cache misses",
 			}),
 			sessionDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-				Name:    "foundation_storage_engine_auth0_session_duration_seconds",
+				Name:    "warp_auth0_session_duration_seconds",
 				Help:    "Duration of Auth0 user sessions",
 				Buckets: prometheus.ExponentialBuckets(60, 2, 10), // 1min to ~17hours
 			}),
 			auth0APILatency: prometheus.NewHistogram(prometheus.HistogramOpts{
-				Name:    "foundation_storage_engine_auth0_api_duration_seconds",
+				Name:    "warp_auth0_api_duration_seconds",
 				Help:    "Latency of Auth0 API calls",
 				Buckets: prometheus.DefBuckets,
 			}),

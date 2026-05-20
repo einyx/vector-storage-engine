@@ -118,7 +118,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	// Build the metrics handle before encryption so KMS / encryption layers can
 	// record into the shared registry. NewMetrics is a sync.Once singleton, so
 	// reusing this handle below is fine.
-	metricsHandle := metrics.NewMetrics("foundation_storage_engine")
+	metricsHandle := metrics.NewMetrics("warp")
 
 	// Wrap with encryption if enabled. Encryption is the outermost storage
 	// layer so cache (if present) holds ciphertext, not plaintext.
