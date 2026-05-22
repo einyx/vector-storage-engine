@@ -20,8 +20,8 @@ import (
 	"github.com/gorilla/sessions"
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 func init() {
@@ -60,6 +60,19 @@ const (
 	storageAdminRole = "storage-admin"
 	superAdminRole   = "super-admin"
 )
+
+// allowedJWTSigAlgs is the algorithm allow-list passed to
+// jwt.ParseSigned. go-jose/v4 mandates this slice — without it the
+// parser would accept any algorithm the token's header asks for,
+// re-introducing the classic alg-confusion attack family (e.g. an
+// attacker who can mint a token with a key the server happens to
+// hold for a different purpose could pass verification by setting
+// `alg: HS256` and presenting that key's public material as the
+// HMAC secret). Restricting parse-time to RS256 only is a
+// non-negotiable hardening that the previous v2-jose code declared
+// the intent for (via the allowedJWTAlgorithm constant) but never
+// actually enforced.
+var allowedJWTSigAlgs = []jose.SignatureAlgorithm{jose.SignatureAlgorithm(allowedJWTAlgorithm)}
 
 type Auth0Handler struct {
 	config      *config.Auth0Config
@@ -1596,7 +1609,7 @@ func (h *Auth0Handler) verifyJWTSignature(token string) error {
 		return nil
 	}
 
-	parsed, err := jwt.ParseSigned(token)
+	parsed, err := jwt.ParseSigned(token, allowedJWTSigAlgs)
 	if err != nil {
 		return fmt.Errorf("failed to parse JWT: %w", err)
 	}
@@ -1715,7 +1728,7 @@ func (h *Auth0Handler) ValidateJWT(tokenString string) (*UserClaims, error) {
 	h.metrics.RecordJWTCacheMiss()
 
 	// Parse JWT token
-	token, err := jwt.ParseSigned(tokenString)
+	token, err := jwt.ParseSigned(tokenString, allowedJWTSigAlgs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse JWT: %w", err)
 	}
@@ -1733,11 +1746,16 @@ func (h *Auth0Handler) ValidateJWT(tokenString string) (*UserClaims, error) {
 		return nil, fmt.Errorf("failed to verify token claims: %w", err)
 	}
 
-	// Validate standard claims
+	// Validate standard claims. In go-jose/v4 the Expected.Audience
+	// field was renamed to AnyAudience — the validator now treats
+	// the list as "ANY of these audiences must match" rather than
+	// the v2 semantics of "all listed audiences must be present in
+	// the token." For our single-audience case the two are
+	// equivalent.
 	err = claims.Validate(jwt.Expected{
-		Issuer:   fmt.Sprintf("https://%s/", h.config.Domain),
-		Audience: jwt.Audience{h.config.Audience},
-		Time:     time.Now(),
+		Issuer:      fmt.Sprintf("https://%s/", h.config.Domain),
+		AnyAudience: jwt.Audience{h.config.Audience},
+		Time:        time.Now(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("token validation failed: %w", err)

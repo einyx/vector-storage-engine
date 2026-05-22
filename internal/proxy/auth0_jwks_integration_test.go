@@ -11,8 +11,8 @@ import (
 
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 
-	jose "gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 func TestVerifyJWTSignature_JWKS_EndToEnd(t *testing.T) {
@@ -54,7 +54,7 @@ func TestVerifyJWTSignature_JWKS_EndToEnd(t *testing.T) {
 		Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
 		IssuedAt: jwt.NewNumericDate(now),
 	}
-	raw, err := jwt.Signed(signer).Claims(cl).CompactSerialize()
+	raw, err := jwt.Signed(signer).Claims(cl).Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestVerifyJWTSignature_JWKS_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawWrong, err := jwt.Signed(signerOther).Claims(cl).CompactSerialize()
+	rawWrong, err := jwt.Signed(signerOther).Claims(cl).Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
