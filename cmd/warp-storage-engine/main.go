@@ -83,6 +83,14 @@ func run(cmd *cobra.Command, _ []string) error {
 		"num_cpu": runtime.NumCPU(),
 	}).Info("Starting S3 proxy server")
 
+	// NOTE: warp-storage-engine MUST NOT read its own credentials from
+	// Vault. Vault's storage backend is THIS service (see
+	// docker/vault/config.hcl — `storage "s3"` pointing at warp).
+	// Pulling warp's S3 creds from Vault creates a bootstrap deadlock:
+	// warp waits for Vault, Vault waits for warp, neither boots. Keep
+	// S3_ACCESS_KEY / S3_SECRET_KEY as plain env vars and let
+	// docker-compose's `${SCW_STORAGE_ACCESS_KEY:-}` chain fall back
+	// to operator config.
 	configFile, _ := cmd.Flags().GetString("config")
 	appConfig, err := config.Load(configFile)
 	if err != nil {
