@@ -1,0 +1,11 @@
+version: 1
+repositories:
+  primary: "github.com/einyx/vector-storage-engine"
+  related: []
+environment:
+  start: "echo 'Configure environment.start in .facility.yml' >&2; exit 1"
+  services:
+    app:
+      port: 3000
+      protocol: http
+      websocket: true
