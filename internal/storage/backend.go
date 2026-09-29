@@ -131,6 +131,11 @@ func NewBackend(cfg config.StorageConfig) (Backend, error) {
 			return nil, fmt.Errorf("filesystem configuration required for provider '%s'", cfg.Provider)
 		}
 		return NewFileSystemBackend(cfg.FileSystem)
+	case "github":
+		if cfg.GitHub == nil {
+			return nil, fmt.Errorf("github configuration required for provider '%s'", cfg.Provider)
+		}
+		return NewGitHubBackend(cfg.GitHub)
 	case "multi":
 		return NewMultiBackendSimple(&cfg)
 	default:

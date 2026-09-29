@@ -105,6 +105,7 @@ type StorageConfig struct {
 	Azure      *AzureStorageConfig `mapstructure:"azure"`
 	S3         *S3StorageConfig    `mapstructure:"s3"`
 	FileSystem *FileSystemConfig   `mapstructure:"filesystem"`
+	GitHub     *GitHubConfig       `mapstructure:"github"`
 
 	// S3TenantPrefix routes any bucket whose name starts with this
 	// string to the S3 backend (rather than the local filesystem
@@ -165,6 +166,19 @@ type BucketConfig struct {
 // FileSystemConfig contains filesystem storage backend settings
 type FileSystemConfig struct {
 	BaseDir string `mapstructure:"base_dir" envconfig:"FS_BASE_DIR" default:"/data"`
+}
+
+// GitHubConfig contains GitHub storage backend settings. Each bucket is
+// mapped to a git repository (owner/repo) via bucket_mapping; objects are
+// files in the repository's configured branch.
+type GitHubConfig struct {
+	Token         string            `mapstructure:"token" envconfig:"GITHUB_TOKEN"` // Personal access token (or fine-grained token)
+	APIURL        string            `mapstructure:"api_url" envconfig:"GITHUB_API_URL"` // Optional; for GitHub Enterprise (e.g. https://ghe.example.com/api/v3/)
+	Branch        string            `mapstructure:"branch" envconfig:"GITHUB_BRANCH" default:"main"`
+	BucketMapping map[string]string `mapstructure:"bucket_mapping"` // Map virtual bucket names to "owner/repo"
+	AuthorName    string            `mapstructure:"author_name" default:"warp-storage-engine"`
+	AuthorEmail   string            `mapstructure:"author_email" default:"storage@warp.local"`
+	CommitMessage string            `mapstructure:"commit_message" default:"update via warp-storage-engine"` // Commit message template for writes
 }
 
 // AuthConfig specifies authentication configuration
@@ -403,6 +417,21 @@ func validate(cfg *Config) error {
 	case "filesystem":
 		if cfg.Storage.FileSystem == nil {
 			return fmt.Errorf("filesystem storage config is required for provider '%s'", cfg.Storage.Provider)
+		}
+	case "github":
+		if cfg.Storage.GitHub == nil {
+			return fmt.Errorf("github storage config is required for provider '%s'", cfg.Storage.Provider)
+		}
+		if cfg.Storage.GitHub.Token == "" {
+			return fmt.Errorf("github token is required for provider '%s'", cfg.Storage.Provider)
+		}
+		if len(cfg.Storage.GitHub.BucketMapping) == 0 {
+			return fmt.Errorf("github bucket_mapping is required for provider '%s': map at least one bucket to 'owner/repo'", cfg.Storage.Provider)
+		}
+		for bucket, repo := range cfg.Storage.GitHub.BucketMapping {
+			if !strings.Contains(repo, "/") {
+				return fmt.Errorf("github bucket_mapping entry '%s' must be in 'owner/repo' format, got '%s'", bucket, repo)
+			}
 		}
 	case "multi":
 		// For multi-provider, at least one backend must be configured

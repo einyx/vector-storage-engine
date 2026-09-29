@@ -12,6 +12,7 @@ require (
 	github.com/getsentry/sentry-go v0.35.3
 	github.com/getsentry/sentry-go/slog v0.35.3
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/google/go-github/v68 v68.0.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/sessions v1.4.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -27,6 +28,7 @@ require (
 	github.com/spf13/viper v1.18.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.50.0
+	golang.org/x/oauth2 v0.30.0
 	golang.org/x/time v0.13.0
 )
 
@@ -37,6 +39,8 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
