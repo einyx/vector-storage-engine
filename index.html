@@ -1,0 +1,801 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Warp Storage Engine</title><meta name="description" content="Warp Storage Engine — a unified S3 API gateway for AWS S3, Azure Blob Storage, and local filesystem."><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #080C18;
+    --surface: #0F1629;
+    --border: #1E2D50;
+    --accent: #38BDF8;
+    --accent-dim: #0EA5E9;
+    --text: #E2E8F0;
+    --muted: #64748B;
+    --subtle: #94A3B8;
+    --green: #34D399;
+    --amber: #FBBF24;
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #F1F5F9;
+      --surface: #FFFFFF;
+      --border: #CBD5E1;
+      --accent: #0284C7;
+      --accent-dim: #0369A1;
+      --text: #0F172A;
+      --muted: #64748B;
+      --subtle: #475569;
+      --green: #059669;
+      --amber: #D97706;
+      color-scheme: light;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #080C18;
+    --surface: #0F1629;
+    --border: #1E2D50;
+    --accent: #38BDF8;
+    --accent-dim: #0EA5E9;
+    --text: #E2E8F0;
+    --muted: #64748B;
+    --subtle: #94A3B8;
+    --green: #34D399;
+    --amber: #FBBF24;
+    color-scheme: dark;
+  }
+
+  :root[data-theme="light"] {
+    --bg: #F1F5F9;
+    --surface: #FFFFFF;
+    --border: #CBD5E1;
+    --accent: #0284C7;
+    --accent-dim: #0369A1;
+    --text: #0F172A;
+    --muted: #64748B;
+    --subtle: #475569;
+    --green: #059669;
+    --amber: #D97706;
+    color-scheme: light;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono { font-family: 'JetBrains Mono', monospace; }
+
+  /* NAV */
+  nav {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 clamp(16px, 5vw, 64px);
+    height: 60px;
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: var(--text);
+    text-decoration: none;
+    letter-spacing: -0.02em;
+  }
+
+  .nav-logo span { color: var(--accent); }
+
+  .nav-links {
+    display: flex;
+    gap: 32px;
+    align-items: center;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .nav-links a {
+    font-size: 0.875rem;
+    color: var(--subtle);
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+
+  .nav-links a:hover { color: var(--text); }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.15s;
+    cursor: pointer;
+    border: none;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #080C18;
+  }
+
+  .btn-primary:hover { background: var(--accent-dim); }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--subtle);
+    border: 1px solid var(--border);
+  }
+
+  .btn-ghost:hover { color: var(--text); border-color: var(--subtle); }
+
+  /* HERO */
+  .hero {
+    padding: clamp(64px, 10vw, 120px) clamp(16px, 5vw, 64px) clamp(48px, 8vw, 96px);
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .hero-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 28px;
+  }
+
+  .hero-eyebrow::before {
+    content: '';
+    display: block;
+    width: 24px;
+    height: 1px;
+    background: var(--accent);
+  }
+
+  h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(2.5rem, 6vw, 4.5rem);
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+    margin: 0 0 24px;
+    text-wrap: balance;
+    color: var(--text);
+  }
+
+  h1 em {
+    font-style: normal;
+    color: var(--accent);
+  }
+
+  .hero-sub {
+    font-size: clamp(1rem, 2vw, 1.2rem);
+    color: var(--subtle);
+    max-width: 560px;
+    margin: 0 0 40px;
+    line-height: 1.7;
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 60px;
+  }
+
+  .hero-actions .btn { font-size: 0.9375rem; padding: 11px 24px; }
+
+  /* TERMINAL */
+  .terminal {
+    background: #020408;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    max-width: 680px;
+  }
+
+  .terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  .dot-r { background: #FF5F57; }
+  .dot-y { background: #FEBC2E; }
+  .dot-g { background: #28C840; }
+
+  .terminal-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-left: auto;
+  }
+
+  .terminal-body {
+    padding: 20px 24px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.825rem;
+    line-height: 1.8;
+  }
+
+  .t-comment { color: #4A5568; }
+  .t-key { color: #68D391; }
+  .t-val { color: #90CDF4; }
+  .t-str { color: #F6AD55; }
+  .t-prompt { color: var(--accent); }
+  .t-cmd { color: var(--text); }
+
+  .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 1em;
+    background: var(--accent);
+    vertical-align: text-bottom;
+    animation: blink 1.1s step-end infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* STATS */
+  .stats {
+    display: flex;
+    gap: 48px;
+    flex-wrap: wrap;
+    padding: 40px clamp(16px, 5vw, 64px);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .stat-item { display: flex; flex-direction: column; gap: 4px; }
+
+  .stat-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-num span { color: var(--accent); }
+
+  .stat-label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* SECTIONS */
+  section {
+    padding: clamp(48px, 8vw, 96px) clamp(16px, 5vw, 64px);
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .section-eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  h2 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(1.6rem, 3.5vw, 2.4rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+    color: var(--text);
+  }
+
+  .section-lead {
+    font-size: 1.05rem;
+    color: var(--subtle);
+    max-width: 520px;
+    margin: 0 0 48px;
+    line-height: 1.7;
+  }
+
+  /* FEATURE GRID */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .feature-card {
+    background: var(--bg);
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    transition: background 0.15s;
+  }
+
+  .feature-card:hover { background: var(--surface); }
+
+  .feature-icon {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: 4px;
+    width: fit-content;
+  }
+
+  .feature-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  .feature-desc {
+    font-size: 0.9rem;
+    color: var(--subtle);
+    margin: 0;
+    line-height: 1.65;
+  }
+
+  /* BACKENDS */
+  .backends-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: start;
+  }
+
+  @media (max-width: 680px) { .backends-grid { grid-template-columns: 1fr; } }
+
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .pipeline-step {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+    background: var(--surface);
+    transition: background 0.1s;
+  }
+
+  .pipeline-step:last-child { border-bottom: none; }
+  .pipeline-step:hover { background: color-mix(in srgb, var(--surface) 50%, var(--bg)); }
+
+  .pipeline-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--muted);
+    width: 18px;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pipeline-label { color: var(--text); flex: 1; }
+
+  .pipeline-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-s3 { background: color-mix(in srgb, #FF9900 15%, transparent); color: #FF9900; }
+  .badge-azure { background: color-mix(in srgb, #0078D4 20%, transparent); color: #4DA3FF; }
+  .badge-local { background: color-mix(in srgb, var(--green) 15%, transparent); color: var(--green); }
+  .badge-any { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+
+  .backends-copy h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 12px;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+
+  .backends-copy p {
+    font-size: 0.9rem;
+    color: var(--subtle);
+    margin: 0 0 20px;
+    line-height: 1.7;
+  }
+
+  .tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .tag-list li {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--subtle);
+  }
+
+  /* STEPS */
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 32px;
+    counter-reset: step;
+  }
+
+  .step {
+    counter-increment: step;
+    position: relative;
+    padding-top: 16px;
+  }
+
+  .step::before {
+    content: counter(step, decimal-leading-zero);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    display: block;
+    margin-bottom: 12px;
+  }
+
+  .step-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 8px;
+  }
+
+  .step-desc {
+    font-size: 0.875rem;
+    color: var(--subtle);
+    margin: 0;
+    line-height: 1.65;
+  }
+
+  /* CTA */
+  .cta-band {
+    margin: 0 clamp(16px, 5vw, 64px) clamp(48px, 8vw, 96px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: clamp(40px, 6vw, 72px) clamp(24px, 5vw, 64px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+
+  .cta-text h2 {
+    font-size: clamp(1.4rem, 3vw, 2rem);
+    margin-bottom: 8px;
+  }
+
+  .cta-text p {
+    font-size: 0.95rem;
+    color: var(--subtle);
+    margin: 0;
+  }
+
+  /* FOOTER */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 24px clamp(16px, 5vw, 64px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  footer .logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  footer .logo span { color: var(--accent); }
+
+  footer p {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  @media (max-width: 600px) {
+    .nav-links { display: none; }
+    .stats { gap: 28px; }
+    .backends-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cursor { animation: none; opacity: 1; }
+  }
+</style>
+</head><body>
+
+<!-- NAV -->
+<nav>
+  <a class="nav-logo" href="#">warp<span>.</span></a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#backends">Backends</a></li>
+    <li><a href="#how">Quick start</a></li>
+    <li><a href="https://github.com/einyx/vector-storage-engine" class="btn btn-ghost">GitHub</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-eyebrow">S3-Compatible Gateway</div>
+  <h1>One API.<br><em>Every backend.</em></h1>
+  <p class="hero-sub">
+    Warp Storage Engine speaks the S3 protocol and stores wherever you want —
+    AWS S3, Azure Blob, or plain disk. Point your S3 clients at it. Done.
+  </p>
+  <div class="hero-actions">
+    <a href="https://github.com/einyx/vector-storage-engine" class="btn btn-primary">Get started →</a>
+    <a href="#how" class="btn btn-ghost">Quick start</a>
+  </div>
+
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="dot dot-r"></div>
+      <div class="dot dot-y"></div>
+      <div class="dot dot-g"></div>
+      <span class="terminal-label">docker run</span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="t-prompt">$</span> <span class="t-cmd">docker run -p 8080:8080 \</span></div>
+      <div>&nbsp;&nbsp;<span class="t-key">-e</span> <span class="t-val">STORAGE_PROVIDER=s3</span> <span class="t-comment">\\\ # s3 | azure | local</span></div>
+      <div>&nbsp;&nbsp;<span class="t-key">-e</span> <span class="t-val">S3_ENDPOINT=https://s3.amazonaws.com</span> \</div>
+      <div>&nbsp;&nbsp;<span class="t-key">-e</span> <span class="t-val">AUTH_TYPE=awsv4</span> \</div>
+      <div>&nbsp;&nbsp;<span class="t-key">-e</span> <span class="t-val">AUTH_IDENTITY=proxy-key</span> \</div>
+      <div>&nbsp;&nbsp;<span class="t-key">-e</span> <span class="t-val">AUTH_CREDENTIAL=proxy-secret</span></div>
+      <div class="t-comment">&nbsp;</div>
+      <div><span class="t-prompt">$</span> <span class="t-cmd">aws s3 ls <span class="t-val">--endpoint-url http://localhost:8080</span></span><span class="cursor"></span></div>
+    </div>
+  </div>
+</div>
+
+<!-- STATS -->
+<div class="stats">
+  <div class="stat-item">
+    <div class="stat-num">10<span>-40x</span></div>
+    <div class="stat-label">Faster with caching layer</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-num"><span>&lt;</span>10<span>ms</span></div>
+    <div class="stat-label">Request latency</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-num">3</div>
+    <div class="stat-label">Storage backends</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-num"><span>~</span>0</div>
+    <div class="stat-label">Client changes needed</div>
+  </div>
+</div>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="section-eyebrow">Core capabilities</div>
+  <h2>The S3 API your clients expect.<br>Backends you actually have.</h2>
+  <p class="section-lead">
+    Full object-store semantics over any provider — buckets, multipart uploads,
+    pre-signed URLs, range requests — with auth, caching and observability built in.
+  </p>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon">Compatibility</div>
+      <h3 class="feature-title">S3 API Complete</h3>
+      <p class="feature-desc">Bucket and object operations, multipart uploads, metadata and ACLs, range requests, and pre-signed URLs — verified against standard S3 clients.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Performance</div>
+      <h3 class="feature-title">Intelligent Caching</h3>
+      <p class="feature-desc">Metadata and small-object caching layer delivering a 10–40x boost on hot paths, plus zero-copy streaming and connection pooling with HTTP/2.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Auth</div>
+      <h3 class="feature-title">SigV2 / SigV4</h3>
+      <p class="feature-desc">AWS Signature V2 and V4 with fast-path validation and built-in signature caching. Basic auth and anonymous access modes also available.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Access</div>
+      <h3 class="feature-title">Per-Bucket ACLs</h3>
+      <p class="feature-desc">Fine-grained access control per bucket and key prefix. TLS termination support for secure deployments out of the box.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Resilience</div>
+      <h3 class="feature-title">Backpressure Built In</h3>
+      <p class="feature-desc">Rate limiting, backpressure handling, graceful shutdown, and health check endpoints. Built for traffic, not just demos.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">Operations</div>
+      <h3 class="feature-title">Prometheus Native</h3>
+      <p class="feature-desc">Prometheus metrics, structured logging with configurable levels, and health probes — drop it into Kubernetes and scrape away.</p>
+    </div>
+  </div>
+</section>
+
+<!-- BACKENDS -->
+<section id="backends" style="border-top: 1px solid var(--border);">
+  <div class="section-eyebrow">Storage backends</div>
+  <h2>Swap storage, not code.</h2>
+  <p class="section-lead">
+    One environment variable switches the provider. Your clients never notice.
+  </p>
+
+  <div class="backends-grid">
+    <div class="pipeline">
+      <div class="pipeline-step">
+        <span class="pipeline-num">01</span>
+        <span class="pipeline-label">STORAGE_PROVIDER=s3</span>
+        <span class="pipeline-badge badge-s3">AWS S3</span>
+      </div>
+      <div class="pipeline-step">
+        <span class="pipeline-num">02</span>
+        <span class="pipeline-label">MinIO · Ceph · S3-compatible</span>
+        <span class="pipeline-badge badge-s3">compatible</span>
+      </div>
+      <div class="pipeline-step">
+        <span class="pipeline-num">03</span>
+        <span class="pipeline-label">STORAGE_PROVIDER=azure</span>
+        <span class="pipeline-badge badge-azure">Azure Blob</span>
+      </div>
+      <div class="pipeline-step">
+        <span class="pipeline-num">04</span>
+        <span class="pipeline-label">SAS token support</span>
+        <span class="pipeline-badge badge-azure">azure</span>
+      </div>
+      <div class="pipeline-step">
+        <span class="pipeline-num">05</span>
+        <span class="pipeline-label">STORAGE_PROVIDER=local</span>
+        <span class="pipeline-badge badge-local">filesystem</span>
+      </div>
+      <div class="pipeline-step">
+        <span class="pipeline-num">06</span>
+        <span class="pipeline-label">Zero-copy streaming, any backend</span>
+        <span class="pipeline-badge badge-any">fast path</span>
+      </div>
+    </div>
+
+    <div class="backends-copy">
+      <h3>Azure without rewriting clients.</h3>
+      <p>Point any AWS SDK, CLI, or S3 tool at Warp and back it with Azure Blob Storage — account key or SAS token auth, containers mapped to buckets.</p>
+
+      <h3>Local disk for dev, S3 for prod.</h3>
+      <p>Same API in every environment. Develop against the filesystem backend, ship against S3 or Azure — the endpoint contract doesn't change.</p>
+
+      <h3>Tuned for the platform.</h3>
+      <p>Linux TCP stack optimizations, configurable worker pools, and concurrent operation handling squeeze the most out of the host.</p>
+
+      <ul class="tag-list">
+        <li>Multipart upload</li>
+        <li>Pre-signed URLs</li>
+        <li>Range requests</li>
+        <li>HTTP/2 pooling</li>
+        <li>SigV4 fast path</li>
+        <li>TLS/SSL</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- QUICK START -->
+<section id="how" style="border-top: 1px solid var(--border);">
+  <div class="section-eyebrow">Workflow</div>
+  <h2>Up in four steps.</h2>
+  <p class="section-lead">From container pull to first object stored.</p>
+
+  <div class="steps">
+    <div class="step">
+      <h4 class="step-title">Run the gateway</h4>
+      <p class="step-desc">Pull the image from GHCR and run it with your provider config — S3, Azure, or local. One port, one process.</p>
+    </div>
+    <div class="step">
+      <h4 class="step-title">Point auth at it</h4>
+      <p class="step-desc">Set <code class="mono" style="font-size:0.85em">AUTH_TYPE</code> to SigV4 or basic. Clients keep their existing access/secret keys — Warp validates them.</p>
+    </div>
+    <div class="step">
+      <h4 class="step-title">Use any S3 client</h4>
+      <p class="step-desc">AWS CLI, SDKs, rclone, MinIO client — override the endpoint URL and operate normally, including multipart and presigned URLs.</p>
+    </div>
+    <div class="step">
+      <h4 class="step-title">Ship to production</h4>
+      <p class="step-desc">Deploy via Docker Compose or the Helm chart. Enable TLS, wire Prometheus metrics, set rate limits — done.</p>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta-band">
+  <div class="cta-text">
+    <h2>Ready to serve?</h2>
+    <p>One binary. Every backend. S3 all the way down.</p>
+  </div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;">
+    <a href="https://github.com/einyx/vector-storage-engine" class="btn btn-primary">View on GitHub →</a>
+    <a href="https://github.com/einyx/vector-storage-engine#readme" class="btn btn-ghost">Read the docs</a>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="logo">warp<span>.</span></div>
+  <p>Unified S3 API gateway for S3, Azure Blob, and local storage.</p>
+</footer>
+
+</body></html>
