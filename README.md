@@ -2,16 +2,12 @@
 
 [![Go Version](https://img.shields.io/badge/go-1.21+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/prysmsh/warp-storage-engine)](https://goreportcard.com/report/github.com/prysmsh/warp-storage-engine)
-[![Container Image](https://img.shields.io/badge/ghcr.io-einyx%2Ffoundation--storage--engine-blue?logo=docker&logoColor=white)](https://github.com/prysmsh/warp-storage-engine/pkgs/container/warp-storage-engine)
-[![CI Status](https://github.com/prysmsh/warp-storage-engine/workflows/Release/badge.svg)](https://github.com/prysmsh/warp-storage-engine/actions)
-[![codecov](https://codecov.io/gh/prysmsh/warp-storage-engine/branch/main/graph/badge.svg?token=ABCDEFG)](https://codecov.io/gh/prysmsh/warp-storage-engine)
-[![Release](https://img.shields.io/github/v/release/prysmsh/warp-storage-engine)](https://github.com/prysmsh/warp-storage-engine/releases/latest)
-[![GoDoc](https://pkg.go.dev/badge/github.com/prysmsh/warp-storage-engine?status.svg)](https://pkg.go.dev/github.com/prysmsh/warp-storage-engine)
-[![Vibes](https://img.shields.io/badge/vibes-immaculate%20✨-ff69b4?style=flat)](https://github.com/prysmsh/warp-storage-engine)
+[![Go Report Card](https://goreportcard.com/badge/github.com/einyx/vector-storage-engine)](https://goreportcard.com/report/github.com/einyx/vector-storage-engine)
+[![Container Image](https://img.shields.io/badge/ghcr.io-einyx%2Fvector--storage--engine-blue?logo=docker&logoColor=white)](https://github.com/einyx/vector-storage-engine/pkgs/container/vector-storage-engine)
+[![CI Status](https://github.com/einyx/vector-storage-engine/actions/workflows/test.yml/badge.svg)](https://github.com/einyx/vector-storage-engine/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/einyx/vector-storage-engine)](https://github.com/einyx/vector-storage-engine/releases/latest)
+[![Website](https://img.shields.io/badge/website-einyx.github.io%2Fvector--storage--engine-blue?logo=github)](https://einyx.github.io/vector-storage-engine/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat)](http://makeapullrequest.com)
-[![Update Debian Mirror](https://github.com/prysmsh/warp-storage-engine/actions/workflows/debian-mirror.yml/badge.svg)](https://github.com/prysmsh/warp-storage-engine/actions/workflows/debian-mirror.yml)
-[![Update Red Hat Mirror](https://github.com/prysmsh/warp-storage-engine/actions/workflows/redhat-mirror.yml/badge.svg)](https://github.com/prysmsh/warp-storage-engine/actions/workflows/redhat-mirror.yml)
 <p align="center">
   <img src="logo.png" width="20%"/>
 </p>
@@ -92,7 +88,7 @@ Benchmarked on Intel Core i7-9750H, 16GB RAM, NVMe SSD
 
 ```bash
 # Pull the image
-docker pull warp-storage-engine/warp-storage-engine:latest
+docker pull ghcr.io/einyx/vector-storage-engine:latest
 
 # Run with S3 backend
 docker run -p 8080:8080 \
@@ -103,7 +99,7 @@ docker run -p 8080:8080 \
   -e AUTH_TYPE=awsv4 \
   -e AUTH_IDENTITY=proxy-access-key \
   -e AUTH_CREDENTIAL=proxy-secret-key \
-  warp-storage-engine/warp-storage-engine:latest
+  ghcr.io/einyx/vector-storage-engine:latest
 
 # Run with Azure backend
 docker run -p 8080:8080 \
@@ -114,7 +110,7 @@ docker run -p 8080:8080 \
   -e AUTH_TYPE=basic \
   -e AUTH_IDENTITY=admin \
   -e AUTH_CREDENTIAL=password \
-  warp-storage-engine/warp-storage-engine:latest
+  ghcr.io/einyx/vector-storage-engine:latest
 ```
 
 ### Using Docker Compose
@@ -123,7 +119,7 @@ docker run -p 8080:8080 \
 version: '3.8'
 services:
   warp-storage-engine:
-    image: warp-storage-engine/warp-storage-engine:latest
+    image: ghcr.io/einyx/vector-storage-engine:latest
     ports:
       - "8080:8080"
     environment:
@@ -151,27 +147,23 @@ services:
 ### Using Kubernetes/Helm
 
 ```bash
-# Add the Helm repository
-helm repo add warp-storage-engine https://charts.warp-storage-engine.io
-helm repo update
-
-# Install with custom values
-helm install my-warp-storage-engine warp-storage-engine/warp-storage-engine \
+# From a checkout of this repository
+helm install my-warp-storage-engine charts/warp-storage-engine \
   --set storage.provider=azure \
   --set storage.azure.accountName=myaccount \
   --set storage.azure.accountKey=mykey \
   --set auth.type=awsv4
 
 # Or use a values file
-helm install my-warp-storage-engine warp-storage-engine/warp-storage-engine -f values.yaml
+helm install my-warp-storage-engine charts/warp-storage-engine -f values.yaml
 ```
 
 ### Building from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/prysmsh/warp-storage-engine.git
-cd warp-storage-engine
+git clone https://github.com/einyx/vector-storage-engine.git
+cd vector-storage-engine
 
 # Build the binary
 make build
@@ -799,17 +791,17 @@ Contribution licensing is summarized in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 💬 Support
 
-- 🐛 [GitHub Issues](https://github.com/prysmsh/warp-storage-engine/issues)
-- 💬 [Discussions](https://github.com/prysmsh/warp-storage-engine/discussions)
+- 🐛 [GitHub Issues](https://github.com/einyx/vector-storage-engine/issues)
+- 💬 [Discussions](https://github.com/einyx/vector-storage-engine/discussions)
 - 📧 [Email Support](mailto:support@warp-storage-engine.io)
 - 💼 [Professional Support](https://warp-storage-engine.io/support)
 
 ---
 
 <p align="center">
-  <a href="https://github.com/prysmsh/warp-storage-engine/stargazers"><img src="https://img.shields.io/github/stars/prysmsh/warp-storage-engine?style=social" alt="GitHub stars"></a>
-  <a href="https://github.com/prysmsh/warp-storage-engine/network/members"><img src="https://img.shields.io/github/forks/prysmsh/warp-storage-engine?style=social" alt="GitHub forks"></a>
-  <a href="https://twitter.com/intent/tweet?text=Check%20out%20Warp Storage Engine%20-%20A%20high-performance%20S3-compatible%20proxy%20server!&url=https://github.com/prysmsh/warp-storage-engine"><img src="https://img.shields.io/twitter/url?style=social&url=https%3A%2F%2Fgithub.com%2Feinyx%2Fwarp-storage-engine" alt="Tweet"></a>
+  <a href="https://github.com/einyx/vector-storage-engine/stargazers"><img src="https://img.shields.io/github/stars/einyx/vector-storage-engine?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/einyx/vector-storage-engine/network/members"><img src="https://img.shields.io/github/forks/einyx/vector-storage-engine?style=social" alt="GitHub forks"></a>
+  <a href="https://twitter.com/intent/tweet?text=Check%20out%20Warp Storage Engine%20-%20A%20high-performance%20S3-compatible%20proxy%20server!&url=https://github.com/einyx/vector-storage-engine"><img src="https://img.shields.io/twitter/url?style=social&url=https%3A%2F%2Fgithub.com%2Feinyx%2Fwarp-storage-engine" alt="Tweet"></a>
 </p>
 
 Made with ❤️ by the Warp Storage Engine community
