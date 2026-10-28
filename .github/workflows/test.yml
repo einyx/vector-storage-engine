@@ -212,7 +212,9 @@ jobs:
         run: |
           # Install required tools
           go install golang.org/x/perf/cmd/benchstat@latest
-          pip install matplotlib pandas
+          # Debian has no system pip, so use a venv
+          python3 -m venv .venv-trends
+          .venv-trends/bin/pip install --quiet matplotlib pandas
           
           # Create Python script to generate graphs
           cat > generate_trends.py << 'EOF'
@@ -282,7 +284,7 @@ jobs:
                       f.write(f'| {row["benchmark"]} | {row["ns/op"]:.2f} |\n')
           EOF
           
-          python generate_trends.py
+          .venv-trends/bin/python generate_trends.py
       
       # Update README with trends
       - name: Update README with benchmark trends
