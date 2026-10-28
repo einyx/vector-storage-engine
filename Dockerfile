@@ -1,15 +1,14 @@
-# Build stage - build from repo root: docker build -f warp-storage-engine/Dockerfile .
-FROM golang:1.24.3-alpine AS builder
+# Build stage - build from repo root: docker build -f Dockerfile .
+FROM golang:1.25.14-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-COPY warp-storage-engine/go.mod warp-storage-engine/go.sum ./warp-storage-engine/
-WORKDIR /app/warp-storage-engine
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY warp-storage-engine/ .
+COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -tags vector -a -installsuffix cgo -ldflags '-extldflags "-static"' -o warp-storage-engine ./cmd/warp-storage-engine
 
@@ -19,11 +18,11 @@ FROM alpine:latest
 # Install wget for health checks
 RUN apk --no-cache add wget ca-certificates
 
-COPY --from=builder /app/warp-storage-engine/warp-storage-engine /warp-storage-engine
+COPY --from=builder /app/warp-storage-engine /warp-storage-engine
 
 # Copy web UI files and API documentation
-COPY warp-storage-engine/web /web
-COPY warp-storage-engine/api /api
+COPY web /web
+COPY api /api
 
 EXPOSE 8080
 
