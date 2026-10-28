@@ -175,6 +175,8 @@ jobs:
             });
   
   benchmark-trends:
+    permissions:
+      contents: write
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main'
     steps:
@@ -195,7 +197,7 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           
           go test -bench=. -benchmem -count=5 -benchtime=1s ./cmd/warp-storage-engine \
-            -run=^$ 2>&1 | tee benchmark-history/bench-${DATE}-${COMMIT}.txt | tail -50
+            -run=^$ 2>&1 | grep -E '^(goos|goarch|pkg|cpu|Benchmark)' | tee benchmark-history/bench-${DATE}-${COMMIT}.txt
       
       # Download previous benchmark results
       - name: Download previous benchmarks
