@@ -335,3 +335,6 @@ jobs:
           name: benchmark-history
           path: benchmark-history/
           retention-days: 90
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
