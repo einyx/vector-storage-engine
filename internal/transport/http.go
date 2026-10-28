@@ -45,8 +45,16 @@ func (d *DNSCache) resolve(ctx context.Context, host string) ([]net.IP, error) {
 	entry, exists := d.cache[host]
 	d.mu.RUnlock()
 
-	if exists && time.Now().Before(entry.expiry) {
-		return entry.ips, nil
+	if exists {
+		// entry.ips/entry.expiry are written under entry.resolving, so they
+		// must be read under the same lock.
+		entry.resolving.Lock()
+		fresh := time.Now().Before(entry.expiry)
+		ips := entry.ips
+		entry.resolving.Unlock()
+		if fresh {
+			return ips, nil
+		}
 	}
 
 	// Create or get entry
