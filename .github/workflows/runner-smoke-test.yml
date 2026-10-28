@@ -1,0 +1,21 @@
+name: runner-smoke-test
+# throwaway - verifies the dockerized ephemeral runners; safe to delete after
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, i9]
+    timeout-minutes: 10
+    steps:
+      - name: Runner info
+        run: |
+          echo "runner container: $(hostname)"
+          uname -a
+          echo "docker server: $(docker version --format "{{.Server.Version}}")"
+
+      - name: Docker-in-job
+        run: docker run --rm hello-world
