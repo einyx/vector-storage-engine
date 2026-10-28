@@ -179,6 +179,8 @@ jobs:
       contents: write
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -325,7 +327,9 @@ jobs:
           # Only commit if there are changes
           if ! git diff --quiet || ! git diff --staged --quiet; then
             git commit -m "Update benchmark trends [skip ci]"
-            git push
+            # main may have moved while the benchmarks ran
+            git pull --rebase origin main && git push origin HEAD:main || \
+              echo "::warning::could not push benchmark updates (main moved)"
           else
             echo "No changes to commit"
           fi
