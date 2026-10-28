@@ -179,8 +179,6 @@ jobs:
       contents: write
     runs-on: self-hosted
     if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
