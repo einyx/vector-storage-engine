@@ -116,9 +116,15 @@ jobs:
           cache: false
 
       - name: Install and Run Nancy
+        env:
+          OSS_INDEX_APIKEY: ${{ secrets.OSS_INDEX_APIKEY }}
         run: |
           go install github.com/sonatype-nexus-community/nancy@latest
-          go list -json -deps ./... | nancy sleuth
+          if [ -n "${OSS_INDEX_APIKEY}" ]; then
+            go list -json -deps ./... | nancy sleuth
+          else
+            echo "::warning::OSS_INDEX_APIKEY secret not set, skipping the nancy scan"
+          fi
 
   # CodeQL requires GitHub Advanced Security
   # Uncomment this job if you have Advanced Security enabled
