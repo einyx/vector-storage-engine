@@ -8,7 +8,8 @@ permissions: {}
 
 jobs:
   smoke:
-    runs-on: [self-hosted, i9]
+    # "docker" label only exists on the containerized ephemeral runners
+    runs-on: [self-hosted, i9, docker]
     timeout-minutes: 10
     steps:
       - name: Runner info
