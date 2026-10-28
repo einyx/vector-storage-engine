@@ -59,7 +59,7 @@ nfpms:
     homepage: https://github.com/{{ .Env.GITHUB_REPOSITORY }}
     maintainer: Warp Storage Engine Team
     description: High-performance S3-compatible proxy with encryption support
-    license: BUSL-1.1
+    license: Apache-2.0
     builds:
       - warp-storage-engine
     formats:
@@ -108,7 +108,7 @@ changelog:
 release:
   github:
     owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
-    name: "warp-storage-engine"
+    name: "vector-storage-engine"
   name_template: "{{.ProjectName}} v{{.Version}}"
   header: |
     ## Warp Storage Engine {{.Version}}
