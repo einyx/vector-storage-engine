@@ -1,9 +1,12 @@
+//go:build integration
 // +build integration
 
 package virustotal
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -42,7 +45,7 @@ func TestVirusTotalIntegration(t *testing.T) {
 	cleanContent := []byte("This is a clean test file content")
 	result, err := scanner.ScanReader(ctx, strings.NewReader(string(cleanContent)), "clean_test.txt", int64(len(cleanContent)))
 	require.NoError(t, err)
-	
+
 	if result != nil {
 		assert.Equal(t, "clean", result.Verdict)
 		assert.False(t, result.IsThreat())
@@ -62,6 +65,24 @@ func TestVirusTotalIntegration(t *testing.T) {
 
 // TestVirusTotalRegressions tests for regression scenarios
 func TestVirusTotalRegressions(t *testing.T) {
+	// Fake VirusTotal API so the scan path never touches the network.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/analyses/"):
+			_, _ = w.Write([]byte(`{"data":{"attributes":{"status":"completed"}}}`))
+		case strings.Contains(r.URL.Path, "/files/"):
+			_, _ = w.Write([]byte(`{"data":{"attributes":{"last_analysis_stats":{"malicious":0,"suspicious":0,"undetected":1,"harmless":0},"last_analysis_date":0,"sha256":"test","permalink":"https://example.test/file"}}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	origBaseURL := baseURL
+	baseURL = srv.URL + "/api/v3"
+	defer func() { baseURL = origBaseURL }()
+
 	tests := []struct {
 		name     string
 		config   *config.VirusTotalConfig
@@ -72,10 +93,10 @@ func TestVirusTotalRegressions(t *testing.T) {
 		{
 			name: "file size at limit",
 			config: &config.VirusTotalConfig{
-				Enabled:      true,
-				APIKey:       "test-key",
-				ScanUploads:  true,
-				MaxFileSize:  "1KB",
+				Enabled:     true,
+				APIKey:      "test-key",
+				ScanUploads: true,
+				MaxFileSize: "1KB",
 			},
 			fileSize: 1024,
 			content:  strings.Repeat("a", 1024),
@@ -84,10 +105,10 @@ func TestVirusTotalRegressions(t *testing.T) {
 		{
 			name: "file size over limit",
 			config: &config.VirusTotalConfig{
-				Enabled:      true,
-				APIKey:       "test-key",
-				ScanUploads:  true,
-				MaxFileSize:  "1KB",
+				Enabled:     true,
+				APIKey:      "test-key",
+				ScanUploads: true,
+				MaxFileSize: "1KB",
 			},
 			fileSize: 1025,
 			content:  strings.Repeat("a", 1025),
@@ -96,10 +117,10 @@ func TestVirusTotalRegressions(t *testing.T) {
 		{
 			name: "scan uploads disabled",
 			config: &config.VirusTotalConfig{
-				Enabled:      true,
-				APIKey:       "test-key",
-				ScanUploads:  false,
-				MaxFileSize:  "1MB",
+				Enabled:     true,
+				APIKey:      "test-key",
+				ScanUploads: false,
+				MaxFileSize: "1MB",
 			},
 			fileSize: 100,
 			content:  "test content",
@@ -112,25 +133,24 @@ func TestVirusTotalRegressions(t *testing.T) {
 			scanner, err := NewScanner(tt.config)
 			require.NoError(t, err)
 
-			// Mock the client to track if scan was attempted
-			scanAttempted := false
+			// Replace the client with one pointed at the fake API
 			if scanner.client != nil {
-				// Replace client with a test double that tracks calls
 				oldClient := scanner.client
 				scanner.client = &Client{
 					apiKey:      "test-key",
+					httpClient:  srv.Client(),
 					maxFileSize: oldClient.maxFileSize,
 					logger:      oldClient.logger,
 				}
 			}
 
-			result, err := scanner.ScanReader(context.Background(), 
+			result, err := scanner.ScanReader(context.Background(),
 				strings.NewReader(tt.content), "test.txt", tt.fileSize)
-			
+
 			if tt.wantScan && scanner.IsEnabled() {
-				// For real scans we'd check scanAttempted
-				// Here we just verify no error for size limits
+				// The fake API reports the file as already scanned
 				assert.NoError(t, err)
+				assert.NotNil(t, result)
 			} else {
 				// Should return nil without scanning
 				assert.Nil(t, result)
