@@ -239,3 +239,6 @@ jobs:
           name: security-scan-summary
           path: security-results/
           retention-days: 30
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
