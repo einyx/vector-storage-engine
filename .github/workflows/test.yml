@@ -108,7 +108,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           go test -bench=. -benchmem -count=3 -benchtime=10s ./cmd/warp-storage-engine \
-            -run=^$ | tee $REGRESSION_TEST_DIR/baseline-bench.txt
+            -run=^$ 2>&1 | tee $REGRESSION_TEST_DIR/baseline-bench.txt | tail -50
       
       - name: Checkout PR branch
         if: github.event_name == 'pull_request'
@@ -119,7 +119,7 @@ jobs:
       - name: Run current benchmarks
         run: |
           go test -bench=. -benchmem -count=3 -benchtime=10s ./cmd/warp-storage-engine \
-            -run=^$ | tee $REGRESSION_TEST_DIR/current-bench.txt
+            -run=^$ 2>&1 | tee $REGRESSION_TEST_DIR/current-bench.txt | tail -50
       
       # Compare benchmarks
       - name: Install benchstat
@@ -141,7 +141,7 @@ jobs:
       - name: Run memory profiling
         run: |
           go test -run=BenchmarkPutObject -memprofile=$REGRESSION_TEST_DIR/mem.prof \
-            -bench=BenchmarkPutObject ./cmd/warp-storage-engine
+            -bench=BenchmarkPutObject ./cmd/warp-storage-engine 2>&1 | tail -50
           go tool pprof -text $REGRESSION_TEST_DIR/mem.prof > $REGRESSION_TEST_DIR/mem-profile.txt
       
       # Test backward compatibility
@@ -195,7 +195,7 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           
           go test -bench=. -benchmem -count=5 -benchtime=10s ./cmd/warp-storage-engine \
-            -run=^$ | tee benchmark-history/bench-${DATE}-${COMMIT}.txt
+            -run=^$ 2>&1 | tee benchmark-history/bench-${DATE}-${COMMIT}.txt | tail -50
       
       # Download previous benchmark results
       - name: Download previous benchmarks

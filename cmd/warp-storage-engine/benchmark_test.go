@@ -12,9 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/prysmsh/warp-storage-engine/internal/config"
 	"github.com/prysmsh/warp-storage-engine/internal/proxy"
 )
+
+func init() {
+	// The proxy logs every request at INFO, which turns a benchmark run into
+	// megabytes of console output (and hours of runner log upload).
+	logrus.SetLevel(logrus.ErrorLevel)
+}
 
 func BenchmarkFoundationStorageEngineGet(b *testing.B) {
 	// Create test server with optimized settings
