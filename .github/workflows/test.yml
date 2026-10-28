@@ -45,6 +45,37 @@ jobs:
       - name: Run stress tests
         run: go test ./tests/stress/... -tags=stress -v -timeout=10m
   
+  emulator-tests:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.3'
+
+      # S3Mock and Azurite stand in for S3 and Azure Blob Storage.
+      - name: Start emulators
+        env:
+          S3MOCK_PORT: 19090
+          AZURITE_PORT: 11000
+        run: |
+          docker compose -p warp-emulators-${{ github.run_id }} -f docker-compose.test.yml up -d
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://127.0.0.1:19090/ && \
+            curl -s -o /dev/null http://127.0.0.1:11000/devstoreaccount1 && break
+            sleep 2
+          done
+
+      - name: Run emulator integration tests
+        env:
+          S3MOCK_ENDPOINT: http://127.0.0.1:19090
+          AZURITE_ENDPOINT: http://127.0.0.1:11000/devstoreaccount1
+        run: go test -tags=integration -v -run 'TestS3MockBackend|TestAzuriteBackend' ./internal/storage/
+
+      - name: Stop emulators
+        if: always()
+        run: docker compose -p warp-emulators-${{ github.run_id }} -f docker-compose.test.yml down -v
+
   regression-tests:
     runs-on: self-hosted
     needs: test

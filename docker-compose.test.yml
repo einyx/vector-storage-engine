@@ -1,0 +1,40 @@
+# Local emulators for the S3 and Azure storage backends.
+#
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   make test-emulators
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Azurite serves the Azure Blob API on 10000 (devstoreaccount1), S3Mock serves
+# the S3 API on 9090. Host ports are overridable so parallel CI jobs can use
+# their own (S3MOCK_PORT / AZURITE_PORT).
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    ports:
+      - "${AZURITE_PORT:-10000}:10000" # blob
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - require('http').get('http://127.0.0.1:10000/',()=>process.exit(0)).on('error',()=>process.exit(1))
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  s3mock:
+    image: adobe/s3mock:5.2.3
+    ports:
+      - "${S3MOCK_PORT:-9090}:9090" # S3 API
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  azurite-data:
