@@ -1,9 +1,10 @@
-.PHONY: all build test test-vector clean security-check install-security-tools
+.PHONY: all build test test-vector clean security-check install-security-tools test-emulators test-emulators-up test-emulators-down
 
 # Build variables
 BINARY_NAME=warp-storage-engine
 GO=go
 GOFLAGS=-v
+EMULATOR_COMPOSE=docker compose -f docker-compose.test.yml
 
 all: security-check test build
 
@@ -15,6 +16,16 @@ test:
 
 test-vector:
 	$(GO) test $(GOFLAGS) -tags vector ./pkg/vector/...
+
+# Storage backend emulators (S3Mock + Azurite) used by the integration tests
+test-emulators-up:
+	$(EMULATOR_COMPOSE) up -d --wait
+
+test-emulators-down:
+	$(EMULATOR_COMPOSE) down -v
+
+test-emulators:
+	$(GO) test $(GOFLAGS) -tags=integration -run 'TestS3MockBackend|TestAzuriteBackend' ./internal/storage/
 
 test-coverage:
 	$(GO) test $(GOFLAGS) ./... -coverprofile=coverage.out -covermode=atomic

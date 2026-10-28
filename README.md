@@ -175,6 +175,41 @@ make test
 ./bin/warp-storage-engine --config config.yaml
 ```
 
+### Testing with Local Emulators
+
+[S3Mock](https://github.com/adobe/S3Mock) and [Azurite](https://github.com/Azure/Azurite) stand in for S3 and Azure Blob Storage, so both storage backends can be exercised without cloud credentials.
+
+```bash
+# Start the emulators (S3 on :9090, Azure Blob on :10000)
+make test-emulators-up
+
+# Run the emulator integration tests
+make test-emulators
+
+# Stop the emulators and wipe their data
+make test-emulators-down
+```
+
+Point the engine at them with:
+
+```bash
+# S3 backend -> S3Mock
+STORAGE_PROVIDER=s3 \
+S3_ENDPOINT=http://localhost:9090 \
+S3_ACCESS_KEY=test S3_SECRET_KEY=test \
+S3_REGION=us-east-1 S3_USE_PATH_STYLE=true \
+AUTH_TYPE=basic AUTH_IDENTITY=admin AUTH_CREDENTIAL=secret
+
+# Azure backend -> Azurite
+STORAGE_PROVIDER=azure \
+AZURE_ACCOUNT_NAME=devstoreaccount1 \
+AZURE_ACCOUNT_KEY="Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==" \
+AZURE_ENDPOINT=http://localhost:10000/devstoreaccount1 \
+AUTH_TYPE=basic AUTH_IDENTITY=admin AUTH_CREDENTIAL=secret
+```
+
+The emulator tests live behind the `integration` build tag and skip themselves when no emulator is reachable, so `go test -tags=integration ./internal/storage/` stays green without Docker. CI runs them against the same compose file.
+
 ## ⚙️ Configuration
 
 ### Configuration Methods
