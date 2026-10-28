@@ -13,7 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.3'
+          go-version: '1.25.14'
+          cache: false
       
       # Run unit tests
       - name: Run unit tests
@@ -51,7 +52,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.3'
+          go-version: '1.25.14'
+          cache: false
 
       # S3Mock and Azurite stand in for S3 and Azure Blob Storage.
       - name: Start emulators
@@ -86,7 +88,8 @@ jobs:
       
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.3'
+          go-version: '1.25.14'
+          cache: false
       
       # Set up test environment
       - name: Set up test environment
@@ -181,7 +184,8 @@ jobs:
       
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.3'
+          go-version: '1.25.14'
+          cache: false
       
       # Run benchmarks and save results
       - name: Run benchmarks for trends
