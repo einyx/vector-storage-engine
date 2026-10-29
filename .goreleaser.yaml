@@ -21,6 +21,12 @@ builds:
       - arm
     goarm:
       - "7"
+    # Go 1.26 dropped the 32-bit windows/arm and darwin/arm ports
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: darwin
+        goarch: arm
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
