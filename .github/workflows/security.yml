@@ -92,14 +92,18 @@ jobs:
     runs-on: self-hosted
     container:
       image: returntocorp/semgrep
-      # Run as the runner user (uid 1000). As root the container leaves
-      # root-owned files in the workspace, which breaks the checkout of
-      # whatever job runs on this runner next.
-      options: --user 1000:1000 -e HOME=/tmp
     steps:
       - uses: actions/checkout@v4
 
       - run: semgrep --config=auto --json --output=semgrep-results.json || true
+
+      - name: Restore workspace ownership
+        if: always()
+        run: |
+          # The container runs as root, so it leaves root-owned files behind and
+          # the next job on this runner cannot clean the workspace up. uid 1000
+          # is the runner user on the host.
+          chown -R 1000:1000 "$GITHUB_WORKSPACE" "$RUNNER_TEMP" 2>/dev/null || true
 
       - name: Upload Semgrep results
         uses: actions/upload-artifact@v4
