@@ -128,9 +128,9 @@ jobs:
           OSSI_USERNAME: ${{ secrets.OSSI_USERNAME }}
           OSSI_TOKEN: ${{ secrets.OSSI_TOKEN }}
         run: |
-          go install github.com/sonatype-nexus-community/nancy@latest
+          # v2 is the first release with Sonatype Guide token support
+          go install github.com/sonatype-nexus-community/nancy/v2@latest
           if [ -n "${GUIDE_TOKEN}" ]; then
-            # nancy v1 only reads the token from the flag, not from the env
             go list -json -deps ./... | nancy sleuth --guide-token "${GUIDE_TOKEN}"
           elif [ -n "${OSSI_USERNAME}" ] && [ -n "${OSSI_TOKEN}" ]; then
             go list -json -deps ./... | nancy sleuth --username "${OSSI_USERNAME}" --token "${OSSI_TOKEN}"
