@@ -1,5 +1,5 @@
 # Build stage - build from repo root: docker build -f Dockerfile .
-FROM golang:1.25.14-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
