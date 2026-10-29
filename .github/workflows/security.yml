@@ -90,20 +90,19 @@ jobs:
   semgrep:
     name: Static Analysis with Semgrep
     runs-on: self-hosted
-    container:
-      image: returntocorp/semgrep
     steps:
       - uses: actions/checkout@v4
 
-      - run: semgrep --config=auto --json --output=semgrep-results.json || true
-
-      - name: Restore workspace ownership
-        if: always()
+      - name: Install Semgrep
         run: |
-          # The container runs as root, so it leaves root-owned files behind and
-          # the next job on this runner cannot clean the workspace up. uid 1000
-          # is the runner user on the host.
-          chown -R 1000:1000 "$GITHUB_WORKSPACE" "$RUNNER_TEMP" 2>/dev/null || true
+          # A job container cannot run on the containerized runners, and it
+          # leaves root-owned files in the workspace, so run semgrep natively.
+          python3 -m venv .venv-semgrep
+          .venv-semgrep/bin/pip install --quiet semgrep
+
+      - name: Run Semgrep
+        run: |
+          .venv-semgrep/bin/semgrep --config=auto --json --output=semgrep-results.json || true
 
       - name: Upload Semgrep results
         uses: actions/upload-artifact@v4
